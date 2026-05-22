@@ -1014,6 +1014,8 @@ mod tests {
 
 - [ ] **Step 4: Implement list_models**
 
+Add the response types at **module scope** (outside any `impl` block, near the top after the imports):
+
 ```rust
 #[derive(Deserialize)]
 struct OAIModelsResp {
@@ -1023,7 +1025,11 @@ struct OAIModelsResp {
 struct OAIModel {
     id: String,
 }
+```
 
+Add `list_models_impl` inside `impl OpenAICompatProvider { ... }` (the same block that holds `build_headers`):
+
+```rust
 async fn list_models_impl(&self) -> Result<Vec<ModelInfo>> {
     let url = format!("{}/v1/models", self.base_url.trim_end_matches('/'));
     let resp = self.client.get(&url).headers(self.build_headers()).send().await?;
@@ -1041,7 +1047,7 @@ async fn list_models_impl(&self) -> Result<Vec<ModelInfo>> {
 }
 ```
 
-(Replace the `list_models` method body in the `impl Provider` block to call `self.list_models_impl().await`.)
+Then replace the `list_models` method body inside `impl Provider for OpenAICompatProvider` to delegate:
 
 ```rust
 async fn list_models(&self) -> Result<Vec<ModelInfo>> {
@@ -1480,7 +1486,9 @@ impl Provider for AnthropicProvider {
     }
 
     async fn health(&self) -> Result<bool> {
-        // Cheapest verifiable call: send a 1-token request and check 200. Or just verify URL reachable.
+        // We only confirm the host is reachable and not erroring at server-level (5xx).
+        // Anthropic responds to HEAD /v1/messages with 4xx (405 / 401), which we treat as
+        // "service reachable; auth/method may still be wrong but the endpoint is alive."
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
         let r = self.client.head(&url).header("x-api-key", &self.api_key).send().await;
         Ok(matches!(r, Ok(resp) if resp.status().as_u16() < 500))
@@ -2277,12 +2285,15 @@ pub fn run() {
         .try_init()
         .ok();
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let state = rt.block_on(AppState::new());
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(state)
+        .setup(|app| {
+            // Build AppState on Tauri's own async runtime so reqwest::Client and
+            // any spawned tasks live on the same runtime that drives async commands.
+            let state = tauri::async_runtime::block_on(AppState::new());
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::providers::list_provider_configs,
             commands::providers::add_provider,
@@ -2297,6 +2308,8 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 ```
+
+> **Why `tauri::async_runtime::block_on` instead of a fresh `tokio::runtime::Builder`?** `reqwest::Client` instances spawn connection-pool tasks on the runtime that constructed them; Tauri's async commands run on Tauri's own runtime. Using two runtimes risks the client's pool tasks living on a runtime that may be dropped or starved. `tauri::async_runtime::block_on` shares the runtime, eliminating that footgun.
 
 (The `greet` command is removed — no longer needed.)
 
@@ -3016,7 +3029,9 @@ If any step fails: debug, fix, recommit, re-test.
 ```
 git add -A
 git status   # confirm nothing unexpected
-git commit -m "Plan 01 verification — full E2E pass" --allow-empty
+# Skip the commit if `git status` is clean — no empty commits in history.
+# If there ARE changes (e.g. bugfixes during smoke test), commit them:
+git commit -m "Plan 01 verification — bugfixes during smoke test"
 git push
 ```
 
