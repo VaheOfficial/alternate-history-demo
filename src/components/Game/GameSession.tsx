@@ -2,19 +2,28 @@ import { useMemo, useState } from "react";
 import { WorldMap, type ProvinceHoverInfo } from "../Map/WorldMap";
 import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors";
 import type { World } from "../../lib/game/types";
+import { endTurn, type ValidatorResult } from "../../lib/game/tauri";
 import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
+import { TurnControls } from "./TurnControls";
+import { ActionPanel } from "./ActionPanel";
+import { SavesDrawer } from "./SavesDrawer";
 
 export function GameSession({
-  world,
+  world: initialWorld,
   onExit,
 }: {
   world: World;
   onExit: () => void;
 }) {
+  const [world, setWorld] = useState<World>(initialWorld);
   const [hover, setHover] = useState<ProvinceHoverInfo | null>(null);
   const [selectedNation, setSelectedNation] = useState<string | null>(null);
   const [selectedShape, setSelectedShape] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [pacingHint, setPacingHint] = useState<number | null>(null);
+  const [showSaves, setShowSaves] = useState(false);
+  const [turnError, setTurnError] = useState<string | null>(null);
 
   const ownershipColors = useMemo(
     () => buildOwnershipColors(world, { selectedShape }),
@@ -42,6 +51,27 @@ export function GameSession({
     setSelectedShape(null);
   };
 
+  const handleEndTurn = async (days: number) => {
+    setBusy(true);
+    setTurnError(null);
+    try {
+      const next = await endTurn(world, days);
+      setWorld(next);
+      setPacingHint(null);
+    } catch (e) {
+      setTurnError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleValidatorResult = (r: ValidatorResult) => {
+    // The backend already applied any accepted actions + saved a snapshot.
+    // Reflect the new world locally and pick up the AI's pacing suggestion.
+    if (r.accepted) setWorld(r.world);
+    if (r.next_tick_days != null) setPacingHint(r.next_tick_days);
+  };
+
   return (
     <div style={containerStyle}>
       <TopBar
@@ -49,7 +79,12 @@ export function GameSession({
         round={world.clock.round}
         nationCount={world.nations.length}
         provinceCount={world.provinces.length}
+        busy={busy}
+        pacingHint={pacingHint}
+        onEndTurn={handleEndTurn}
         onExit={onExit}
+        onShowSaves={() => setShowSaves(true)}
+        error={turnError}
       />
       <div style={{ position: "relative", flex: 1, overflow: "hidden" }}>
         <WorldMap
@@ -65,11 +100,22 @@ export function GameSession({
             y={hover.clientY}
           />
         )}
+        <ActionPanel world={world} onResult={handleValidatorResult} />
         {selectedNation && (
           <CountryDrawer
             world={world}
             nationId={selectedNation}
             onClose={handleCloseDrawer}
+          />
+        )}
+        {showSaves && (
+          <SavesDrawer
+            world={world}
+            onLoaded={(w) => {
+              setWorld(w);
+              setShowSaves(false);
+            }}
+            onClose={() => setShowSaves(false)}
           />
         )}
       </div>
@@ -82,13 +128,23 @@ function TopBar({
   round,
   nationCount,
   provinceCount,
+  busy,
+  pacingHint,
+  onEndTurn,
   onExit,
+  onShowSaves,
+  error,
 }: {
   date: string;
   round: number;
   nationCount: number;
   provinceCount: number;
+  busy: boolean;
+  pacingHint: number | null;
+  onEndTurn: (days: number) => void;
   onExit: () => void;
+  onShowSaves: () => void;
+  error: string | null;
 }) {
   return (
     <div style={topBarStyle}>
@@ -97,12 +153,19 @@ function TopBar({
       </button>
       <div style={dateBlockStyle}>
         <div style={dateStyle}>{formatDate(date)}</div>
-        <div style={roundStyle}>Round {round}</div>
+        <div style={roundStyle}>
+          Round {round}
+          {error && <span style={{ color: "var(--danger)", marginLeft: 10 }}>· {error}</span>}
+        </div>
       </div>
       <div style={statsStyle}>
         <Pill label="Nations" value={String(nationCount)} />
         <Pill label="Provinces" value={String(provinceCount)} />
       </div>
+      <button onClick={onShowSaves} style={exitButtonStyle} title="Saves">
+        Saves
+      </button>
+      <TurnControls busy={busy} pacingHint={pacingHint} onEndTurn={onEndTurn} />
     </div>
   );
 }

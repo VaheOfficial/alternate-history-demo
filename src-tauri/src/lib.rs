@@ -3,6 +3,7 @@
 mod commands;
 mod config;
 mod db;
+pub mod engine;
 mod error;
 mod providers;
 pub mod saves;
@@ -71,6 +72,8 @@ pub fn run() {
             commands::saves::load_snapshot_cmd,
             commands::saves::list_snapshots_cmd,
             commands::saves::create_modern_day_save_cmd,
+            commands::game::end_turn_cmd,
+            commands::game::validate_action_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

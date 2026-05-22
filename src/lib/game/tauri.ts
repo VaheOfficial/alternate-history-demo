@@ -1,6 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ModernSaveBootstrap, SaveSummary, World } from "./types";
 
+export interface ValidatorResult {
+  accepted: boolean;
+  narrative: string;
+  applied: unknown[];
+  failures: { reason: string }[];
+  world: World;
+  next_tick_days: number | null;
+  raw_response: string;
+}
+
 export function createModernDaySave(name: string) {
   return invoke<ModernSaveBootstrap>("create_modern_day_save_cmd", { name });
 }
@@ -30,4 +40,22 @@ export interface SnapshotMeta {
 
 export function listSnapshots(save: string, branch: string) {
   return invoke<SnapshotMeta[]>("list_snapshots_cmd", { save, branch });
+}
+
+export function endTurn(world: World, days: number) {
+  return invoke<World>("end_turn_cmd", { world, days });
+}
+
+export function validateAction(
+  providerId: string,
+  model: string,
+  world: World,
+  playerText: string,
+) {
+  return invoke<ValidatorResult>("validate_action_cmd", {
+    providerId,
+    model,
+    world,
+    playerText,
+  });
 }
