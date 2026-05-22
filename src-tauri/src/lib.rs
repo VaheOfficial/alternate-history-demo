@@ -60,6 +60,14 @@ pub fn run() {
             commands::providers::detect_local_providers,
             commands::providers::get_default_provider,
             commands::providers::set_default_provider,
+            commands::saves::create_save_cmd,
+            commands::saves::list_saves_cmd,
+            commands::saves::delete_save_cmd,
+            commands::saves::list_branches_cmd,
+            commands::saves::create_branch_cmd,
+            commands::saves::save_snapshot_cmd,
+            commands::saves::load_snapshot_cmd,
+            commands::saves::list_snapshots_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
