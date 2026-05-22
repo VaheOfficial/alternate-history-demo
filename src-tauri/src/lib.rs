@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod error;
 mod providers;
+pub mod saves;
 mod secrets;
 pub mod world;
 
