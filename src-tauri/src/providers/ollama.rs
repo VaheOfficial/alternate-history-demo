@@ -63,6 +63,12 @@ struct OllamaChatRequest<'a> {
     /// nicely in the prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<&'a str>,
+    /// Disables reasoning-model thinking when set to false. Critical for
+    /// JSON-mode with thinking models (gemma4, qwen-r1, deepseek-r1) —
+    /// otherwise the model burns its entire token budget in a separate
+    /// `thinking` field and emits empty `content`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +83,8 @@ struct OllamaOptions {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_predict: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +103,11 @@ struct OllamaChatResponse {
 #[derive(Debug, Deserialize)]
 struct OllamaChatResponseMessage {
     content: String,
+    /// Some reasoning models (gemma4, deepseek-r1) split their output into
+    /// a separate `thinking` field. When `content` is empty but `thinking`
+    /// has data, the actual answer is buried in the reasoning trace.
+    #[serde(default)]
+    thinking: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +116,20 @@ struct OllamaStreamLine {
     message: Option<OllamaChatResponseMessage>,
     #[serde(default)]
     done: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    details: Option<OllamaShowDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaShowDetails {
+    #[serde(default)]
+    parameter_size: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,10 +203,14 @@ impl Provider for OllamaProvider {
             model: &request.model,
             messages,
             stream: false,
-            options: if request.temperature.is_some() || request.max_tokens.is_some() {
+            options: if request.temperature.is_some()
+                || request.max_tokens.is_some()
+                || request.num_ctx.is_some()
+            {
                 Some(OllamaOptions {
                     temperature: request.temperature,
                     num_predict: request.max_tokens,
+                    num_ctx: request.num_ctx,
                 })
             } else {
                 None
@@ -189,6 +220,13 @@ impl Provider for OllamaProvider {
                 .response_format
                 .as_deref()
                 .filter(|f| *f == "json"),
+            // Only flip `think` explicitly when the caller has an opinion.
+            // The default behavior (think omitted) lets the model use
+            // whatever its modelfile says — which is "thinking on" for
+            // reasoning models. The game commands compute this from the
+            // GPU profile so weak GPUs fall back to no-thinking but
+            // powerful ones keep reasoning.
+            think: request.allow_thinking.map(|allow| allow),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -230,10 +268,14 @@ impl Provider for OllamaProvider {
             model: &request.model,
             messages,
             stream: true,
-            options: if request.temperature.is_some() || request.max_tokens.is_some() {
+            options: if request.temperature.is_some()
+                || request.max_tokens.is_some()
+                || request.num_ctx.is_some()
+            {
                 Some(OllamaOptions {
                     temperature: request.temperature,
                     num_predict: request.max_tokens,
+                    num_ctx: request.num_ctx,
                 })
             } else {
                 None
@@ -243,6 +285,13 @@ impl Provider for OllamaProvider {
                 .response_format
                 .as_deref()
                 .filter(|f| *f == "json"),
+            // Only flip `think` explicitly when the caller has an opinion.
+            // The default behavior (think omitted) lets the model use
+            // whatever its modelfile says — which is "thinking on" for
+            // reasoning models. The game commands compute this from the
+            // GPU profile so weak GPUs fall back to no-thinking but
+            // powerful ones keep reasoning.
+            think: request.allow_thinking.map(|allow| allow),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -301,6 +350,30 @@ impl Provider for OllamaProvider {
         ))
     }
 
+    async fn estimate_model_size_mb(&self, model: &str) -> Option<u64> {
+        let url = format!("{}/api/show", self.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({ "name": model });
+        let resp = self.client.post(&url).json(&body).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let parsed: OllamaShowResponse = resp.json().await.ok()?;
+        if let Some(size) = parsed.size {
+            return Some(size / (1024 * 1024));
+        }
+        // Fallback: parse parameter_size like "8.0B" — assume ~600 MB per
+        // billion params (Q4 quant ballpark).
+        if let Some(details) = parsed.details {
+            if let Some(p_str) = details.parameter_size {
+                let p_str = p_str.trim_end_matches(|c: char| !c.is_ascii_digit() && c != '.');
+                if let Ok(p_b) = p_str.parse::<f64>() {
+                    return Some((p_b * 600.0) as u64);
+                }
+            }
+        }
+        None
+    }
+
     async fn unload_model(&self, model: &str) -> Result<bool> {
         // Per Ollama API: POST /api/chat with empty messages + keep_alive=0 unloads.
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
@@ -311,6 +384,7 @@ impl Provider for OllamaProvider {
             options: None,
             keep_alive: Some("0"),
             format: None,
+            think: None,
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -390,6 +464,8 @@ mod tests {
             stream: false,
             keep_alive: None,
             response_format: None,
+            num_ctx: None,
+            allow_thinking: None,
         };
         let resp = provider.chat(req).await.expect("chat should succeed");
         assert_eq!(resp.content, "Hello, world!");
@@ -427,6 +503,8 @@ mod tests {
             stream: true,
             keep_alive: None,
             response_format: None,
+            num_ctx: None,
+            allow_thinking: None,
         };
         let mut stream = provider.chat_stream(req).await.expect("stream should start");
         let mut combined = String::new();

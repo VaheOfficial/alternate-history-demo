@@ -413,6 +413,8 @@ mod tests {
             stream: false,
             keep_alive: None,
             response_format: None,
+            num_ctx: None,
+            allow_thinking: None,
         };
         let resp = p.chat(req).await.unwrap();
         assert_eq!(resp.content, "Hi!");
@@ -448,6 +450,8 @@ mod tests {
             stream: true,
             keep_alive: None,
             response_format: None,
+            num_ctx: None,
+            allow_thinking: None,
         };
         let mut s = p.chat_stream(req).await.unwrap();
         let mut combined = String::new();

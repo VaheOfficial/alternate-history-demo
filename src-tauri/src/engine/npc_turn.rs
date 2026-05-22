@@ -126,6 +126,7 @@ async fn orchestrate(
 ) -> Result<Vec<OrchestratorPick>, String> {
     let nations_summary = build_nation_directory(world);
     let recent_events = build_recent_events(world);
+    let tuning = crate::providers::gpu_profile::tune_for(provider, model, true).await;
 
     let system = format!(
         "You decide which world nations would plausibly take a significant action \
@@ -155,11 +156,13 @@ async fn orchestrate(
                 content: user,
             },
         ],
-        max_tokens: Some(512),
+        max_tokens: Some(tuning.num_predict),
         temperature: Some(0.5),
         stream: false,
         keep_alive: None,
         response_format: Some("json".to_string()),
+        num_ctx: Some(tuning.num_ctx),
+        allow_thinking: Some(tuning.allow_thinking),
     };
     let resp = provider
         .chat(req)
@@ -280,6 +283,7 @@ async fn run_nation_turn(
         world.clock.current_date, days, relations, directory, recent_events
     );
 
+    let tuning = crate::providers::gpu_profile::tune_for(provider, model, true).await;
     let req = ChatRequest {
         model: model.to_string(),
         messages: vec![
@@ -292,11 +296,13 @@ async fn run_nation_turn(
                 content: user,
             },
         ],
-        max_tokens: Some(1024),
+        max_tokens: Some(tuning.num_predict),
         temperature: Some(0.6),
         stream: false,
         keep_alive: None,
         response_format: Some("json".to_string()),
+        num_ctx: Some(tuning.num_ctx),
+        allow_thinking: Some(tuning.allow_thinking),
     };
 
     let resp = provider

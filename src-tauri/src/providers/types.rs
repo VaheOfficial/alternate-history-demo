@@ -62,6 +62,17 @@ pub struct ChatRequest {
     /// resilience.
     #[serde(default)]
     pub response_format: Option<String>,
+    /// Ollama only: context window size (`num_ctx`). Use to keep enough
+    /// room for reasoning models to think AND emit an answer. When None,
+    /// provider uses its own default (usually 2048 — too small).
+    #[serde(default)]
+    pub num_ctx: Option<u32>,
+    /// Ollama only: whether to allow the model's thinking/reasoning mode.
+    /// On thinking models (gemma4, deepseek-r1, qwen-r1) this hides the
+    /// trace and forces the model to emit straight content. Disable when
+    /// the GPU can't fit enough context for both reasoning + answer.
+    #[serde(default)]
+    pub allow_thinking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

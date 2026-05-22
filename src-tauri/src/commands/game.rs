@@ -106,6 +106,7 @@ pub async fn request_production_cmd(
         nation.manpower_pool
     );
 
+    let tuning = crate::providers::gpu_profile::tune_for(provider.as_ref(), &model, true).await;
     let req = ChatRequest {
         model,
         messages: vec![
@@ -118,11 +119,13 @@ pub async fn request_production_cmd(
                 content: player_text,
             },
         ],
-        max_tokens: Some(1024),
+        max_tokens: Some(tuning.num_predict),
         temperature: Some(0.4),
         stream: false,
         keep_alive: None,
         response_format: Some("json".to_string()),
+        num_ctx: Some(tuning.num_ctx),
+        allow_thinking: Some(tuning.allow_thinking),
     };
     let resp = provider.chat(req).await?;
     let raw = resp.content;
@@ -277,6 +280,10 @@ pub async fn validate_action_cmd(
     let system = build_system_prompt(&world);
     let user = build_user_prompt(&world, &player_text);
 
+    // GPU-aware tuning: keep reasoning on if the player's GPU has headroom,
+    // fall back to non-thinking on tight VRAM.
+    let tuning = crate::providers::gpu_profile::tune_for(provider.as_ref(), &model, true).await;
+
     let req = ChatRequest {
         model,
         messages: vec![
@@ -289,11 +296,13 @@ pub async fn validate_action_cmd(
                 content: user,
             },
         ],
-        max_tokens: Some(1024),
+        max_tokens: Some(tuning.num_predict),
         temperature: Some(0.4),
         stream: false,
         keep_alive: None,
         response_format: Some("json".to_string()),
+        num_ctx: Some(tuning.num_ctx),
+        allow_thinking: Some(tuning.allow_thinking),
     };
     let response = provider.chat(req).await?;
     let raw = response.content;

@@ -90,6 +90,8 @@ pub async fn test_chat(
         stream: false,
         keep_alive,
         response_format: None,
+        num_ctx: None,
+        allow_thinking: None,
     };
     Ok(p.chat(req).await?)
 }

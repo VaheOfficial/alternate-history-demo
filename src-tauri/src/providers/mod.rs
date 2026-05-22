@@ -1,6 +1,7 @@
 pub mod anthropic;
 pub mod detect;
 pub mod error;
+pub mod gpu_profile;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
@@ -37,5 +38,13 @@ pub trait Provider: Send + Sync {
     /// the operation was attempted, false if not supported.
     async fn unload_model(&self, _model: &str) -> Result<bool> {
         Ok(false)
+    }
+
+    /// Best-effort: returns the model's footprint in MB. Used by game
+    /// commands to compute chat tuning (num_ctx, num_predict, thinking).
+    /// Default impl returns None for providers where this is not meaningful
+    /// or available (cloud APIs).
+    async fn estimate_model_size_mb(&self, _model: &str) -> Option<u64> {
+        None
     }
 }
