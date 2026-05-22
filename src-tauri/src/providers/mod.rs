@@ -1,5 +1,6 @@
 pub mod error;
 pub mod ollama;
+pub mod openai_compatible;
 pub mod types;
 
 use async_trait::async_trait;
