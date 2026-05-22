@@ -19,8 +19,14 @@ export async function loadMapData(): Promise<MapData> {
   const topo = (await topoResp.json()) as TopoMaybe;
   const meta = (await metaResp.json()) as MetaFile;
 
+  // Build meta lookup so we can normalize each feature's properties.
+  const metaByShapeId = new Map<string, ProvinceMeta>();
+  for (const p of meta.provinces) {
+    metaByShapeId.set(p.shape_id, p);
+  }
+
   // mapshaper names its output layer after the input filename ('input' here).
-  // We pick whichever object key exists defensively.
+  // Pick whichever object key exists defensively.
   const objKey = Object.keys(topo.objects)[0];
   if (!objKey) throw new Error("topojson has no objects");
 
@@ -32,12 +38,23 @@ export async function loadMapData(): Promise<MapData> {
 
   const byShapeId = new Map<string, ProvinceFeature>();
   for (const f of features) {
-    const props = f.properties as ProvinceMeta | (Record<string, unknown> & { shapeID?: string });
-    const sid = (props as ProvinceMeta).shape_id ?? (props as any).shapeID;
-    if (sid) {
-      (f.properties as ProvinceMeta).shape_id = sid;
-      byShapeId.set(sid, f);
-    }
+    // geoBoundaries preserves camelCase property names through mapshaper.
+    // Normalize: prefer the meta file (snake_case) and fall back to whatever
+    // the topojson properties contain.
+    const raw = (f.properties as any) ?? {};
+    const sid =
+      String(raw.shape_id ?? raw.shapeID ?? (f as any).id ?? "") || undefined;
+    if (!sid) continue;
+
+    const fromMeta = metaByShapeId.get(sid);
+    const normalized: ProvinceMeta = fromMeta ?? {
+      shape_id: sid,
+      name: String(raw.shapeName ?? raw.name ?? "unknown"),
+      iso_country: String(raw.shapeISO ?? raw.iso_country ?? ""),
+      shape_group: String(raw.shapeGroup ?? raw.shape_group ?? ""),
+    };
+    f.properties = normalized;
+    byShapeId.set(sid, f);
   }
   return { byShapeId, features, meta };
 }
