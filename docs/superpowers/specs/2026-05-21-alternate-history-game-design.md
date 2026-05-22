@@ -271,12 +271,13 @@ enum TypedAction {
     AssassinateNpc { target: NpcId },
     ModifyResource { nation: NationId, resource: Resource, delta: i64 },
     ModifyStability { nation: NationId, delta: i32 },
-    NarrateEvent { headline: String, body: String, category: EventCategory, attached: Vec<Box<TypedAction>> },
     // ... extension point: new action types added without breaking old saves
 }
 ```
 
 Every typed action passes through validation before application: does the actor have the authority, does the precondition hold, does the math make sense?
+
+**Event ↔ typed action relationship.** `Event` (above) is the wrapper that bundles narrative with consequences. The World Event Generator emits `Event` values directly — its `narrative` field carries the LLM-authored text, its `typed_actions` field carries the mechanical mutations. There is no `NarrateEvent` typed action because that role belongs to `Event` itself; typed actions are atomic mutations only, and they appear inside an `Event` (when a narrated thing happens) or standalone (when the Action Validator converts a player's free-text into typed mutations without a narrative wrapper).
 
 ## 6. AI subsystems
 
@@ -290,7 +291,7 @@ Each subsystem is a distinct prompt with a typed input and a typed output schema
 | Diplomacy NPC | Player message + NPC persona + relation history | Free-text response + optional `TypedAction` (e.g., offer treaty) | One per nation; persona prompt seeded from NPC roster. |
 | Commander AI | Nation's military state + war goals + opponent posture | Updated frontlines + offensives (typed) | Runs every jump for AI nations; on demand for player nation if delegated. |
 | Event Consolidator | New events from this round | Embedding vector + short summary string | Indexes events into RAG store. |
-| Description→Action | Narrative "what happened" string | `Vec<TypedAction>` | Used during scenario bootstrap and rare narrative→mechanical bridging. |
+| Description→Action | Narrative "what happened" string | `Vec<TypedAction>` (bounded — max 200 actions per invocation, max 50 of any single variant) | Used during scenario bootstrap and rare narrative→mechanical bridging. Bounded output prevents bootstrap blow-up. |
 | Next Speaker | Active group chat state | NpcId of who speaks next | Only for group diplomacy; decides turn order naturally. |
 
 ### Multi-pass jump (canonical example)
@@ -728,9 +729,15 @@ struct Grudge {
 - Grudges modify `opinion_of_player` and surface in dialogue ("You said the same thing in '38, and I believed you then. I won't again.")
 - Implemented as a list on each NPC; queried + injected into diplomacy prompts
 
-### Persistent across the game
+### Persistence model
 
-Even after rewinds (within the same branch line), the NPC's accumulated personality, grudges, and dialogue history persist. Across branches, NPCs reset — different branches are different timelines.
+NPCs are part of the world-state snapshot, so they follow the same branch semantics as everything else:
+
+- **Rewind to round N within an existing branch** restores the NPC's state (persona, grudges, dialogue history) to exactly what it was at round N. The post-N history is discarded *for that NPC on that branch line*.
+- **Creating a new branch from round N** clones the round-N snapshot — the new branch starts with the same NPC state, then evolves independently. The original branch's NPCs are untouched.
+- **Across separate save files** NPCs are fully independent, of course.
+
+In short: an NPC's memory is always a function of the snapshot the player is currently loaded into, not a globally persistent identity.
 
 ## 14. Provider system
 
