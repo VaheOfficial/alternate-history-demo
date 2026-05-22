@@ -36,8 +36,8 @@ export function TurnSummaryModal({
   const passive = picks.filter((p) => !acted.has(p.iso));
 
   return (
-    <div style={backdropStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+    <div style={backdropStyle} onClick={onClose} className="ahd-motion-fade-in">
+      <div style={modalStyle} onClick={(e) => e.stopPropagation()} className="ahd-motion-fade-up">
         <div style={headerStyle}>
           <div>
             <div style={preTitleStyle}>Turn complete</div>

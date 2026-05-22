@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { geoCentroid } from "d3-geo";
 import { WorldMap, type ProvinceHoverInfo } from "../Map/WorldMap";
+import { useMapData } from "../Map/useMapData";
 import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors";
 import type { Nation, World } from "../../lib/game/types";
 import {
@@ -14,14 +16,14 @@ import { listProviderConfigs, listModels } from "../../lib/tauri";
 import type { ProviderConfig } from "../../lib/types";
 import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
-import { TurnControls } from "./TurnControls";
 import { ActionPanel } from "./ActionPanel";
 import { ProductionPanel } from "./ProductionPanel";
-import { SavesDrawer } from "./SavesDrawer";
+import { SavesPanel } from "./SavesPanel";
+import { HistoryPanel } from "./HistoryPanel";
 import { TurnSummaryModal, type EconomyDelta } from "./TurnSummaryModal";
+import { CommandDock, type DockTab } from "./CommandDock";
+import { HudTopBar } from "./HudTopBar";
 import { colorForMapcolor } from "../../lib/map/renderer";
-import { geoCentroid } from "d3-geo";
-import { useMapData } from "../Map/useMapData";
 
 export function GameSession({
   world: initialWorld,
@@ -36,11 +38,10 @@ export function GameSession({
   const [selectedShape, setSelectedShape] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pacingHint, setPacingHint] = useState<number | null>(null);
-  const [showSaves, setShowSaves] = useState(false);
   const [turnError, setTurnError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<DockTab>("orders");
+  const [dockCollapsed, setDockCollapsed] = useState(false);
 
-  // Provider/model owned at the session level so both the player ActionPanel
-  // AND the End-Turn NPC turn flow share one selection.
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [providerId, setProviderId] = useState<string>("");
   const [model, setModel] = useState<string>("");
@@ -72,10 +73,7 @@ export function GameSession({
           setModel("");
           return;
         }
-        setModel((cur) => {
-          if (cur && m.some((mm) => mm.id === cur)) return cur;
-          return m[0].id;
-        });
+        setModel((cur) => (cur && m.some((mm) => mm.id === cur) ? cur : m[0].id));
       })
       .catch(() => setModel(""));
   }, [providerId]);
@@ -87,9 +85,7 @@ export function GameSession({
 
   const playerIso = useMemo(() => {
     if (!world.player_nation) return null;
-    return (
-      world.nations.find((n) => n.id === world.player_nation)?.iso_a3 ?? null
-    );
+    return world.nations.find((n) => n.id === world.player_nation)?.iso_a3 ?? null;
   }, [world.player_nation, world.nations]);
 
   const selectedIso = useMemo(() => {
@@ -139,12 +135,9 @@ export function GameSession({
     setTurnError(null);
     const before = world;
     try {
-      // Step 1: deterministic clock + economy.
       const afterEconomy = await endTurn(before, days);
       const delta = computeEconomyDelta(before, afterEconomy);
 
-      // Step 2: NPC turn (LLM-orchestrated). Best-effort; if it fails we still
-      // surface the economy delta.
       let npc: NpcTurnResult | null = null;
       let npcError: string | null = null;
       if (providerId && model) {
@@ -192,7 +185,7 @@ export function GameSession({
     return m;
   }, [world.nations]);
 
-  // Province → geo-centroid lookup, computed lazily from the topojson.
+  // Province → geo-centroid lookup for unit placement.
   const mapData = useMapData();
   const provinceCentroids = useMemo(() => {
     const m = new Map<string, [number, number]>();
@@ -210,13 +203,11 @@ export function GameSession({
     return m;
   }, [mapData]);
 
-  // Pack units into per-province stacks for the map layer.
   const unitStacks = useMemo(() => {
     if (!world.units || world.units.length === 0) return [];
     const byProvince = new Map<
       string,
       {
-        province_id: string;
         ownerColor: string;
         altOwnerColor?: string;
         count: number;
@@ -232,7 +223,6 @@ export function GameSession({
       let bucket = byProvince.get(key);
       if (!bucket) {
         bucket = {
-          province_id: province.id,
           ownerColor: colorForMapcolor(owner.map_color),
           count: 0,
           owners: new Set(),
@@ -242,13 +232,10 @@ export function GameSession({
       bucket.count += 1;
       bucket.owners.add(u.owner);
       if (bucket.owners.size > 1 && !bucket.altOwnerColor) {
-        // Second owner present → record alt color for the inner dot.
         const otherOwner = world.nations.find(
           (n) => n.id !== owner.id && bucket!.owners.has(n.id),
         );
-        if (otherOwner) {
-          bucket.altOwnerColor = colorForMapcolor(otherOwner.map_color);
-        }
+        if (otherOwner) bucket.altOwnerColor = colorForMapcolor(otherOwner.map_color);
       }
     }
     const stacks: Array<{
@@ -272,19 +259,43 @@ export function GameSession({
     return stacks;
   }, [world.units, world.provinces, world.nations, provinceCentroids]);
 
+  const dockPanels = {
+    orders: (
+      <ActionPanel
+        world={world}
+        providers={providers}
+        providerId={providerId}
+        model={model}
+        onProviderChange={setProviderId}
+        onModelChange={setModel}
+        onResult={handleValidatorResult}
+      />
+    ),
+    production: (
+      <ProductionPanel
+        world={world}
+        providerId={providerId}
+        model={model}
+        noProvider={providers.length === 0}
+        onResult={(r) => {
+          if (r.accepted) setWorld(r.world);
+        }}
+      />
+    ),
+    saves: <SavesPanel world={world} onLoaded={setWorld} />,
+    history: <HistoryPanel world={world} />,
+  } satisfies Record<DockTab, React.ReactNode>;
+
   return (
     <div style={containerStyle}>
-      <TopBar
+      <HudTopBar
         date={world.clock.current_date}
         round={world.clock.round}
-        nationCount={world.nations.length}
-        provinceCount={world.provinces.length}
         playerNation={playerNation}
         busy={busy}
         pacingHint={pacingHint}
         onEndTurn={handleEndTurn}
         onExit={onExit}
-        onShowSaves={() => setShowSaves(true)}
         onOpenPlayerPanel={() => {
           if (playerNation) setSelectedNation(playerNation.id);
         }}
@@ -299,6 +310,7 @@ export function GameSession({
           onProvinceClick={handleClick}
           unitStacks={unitStacks}
         />
+        <div className="ahd-map-vignette" />
         {hover && hoveredProvince && (
           <ProvinceTooltip
             province={hoveredProvince}
@@ -307,39 +319,19 @@ export function GameSession({
             y={hover.clientY}
           />
         )}
-        <ActionPanel
-          world={world}
-          providers={providers}
-          providerId={providerId}
-          model={model}
-          onProviderChange={setProviderId}
-          onModelChange={setModel}
-          onResult={handleValidatorResult}
-        />
-        <ProductionPanel
-          world={world}
-          providerId={providerId}
-          model={model}
-          noProvider={providers.length === 0}
-          onResult={(r) => {
-            if (r.accepted) setWorld(r.world);
-          }}
+        <CommandDock
+          active={activeTab}
+          onActiveChange={setActiveTab}
+          collapsed={dockCollapsed}
+          onCollapsedChange={setDockCollapsed}
+          panels={dockPanels}
+          rightInset={selectedNation ? 380 : 0}
         />
         {selectedNation && (
           <CountryDrawer
             world={world}
             nationId={selectedNation}
             onClose={handleCloseDrawer}
-          />
-        )}
-        {showSaves && (
-          <SavesDrawer
-            world={world}
-            onLoaded={(w) => {
-              setWorld(w);
-              setShowSaves(false);
-            }}
-            onClose={() => setShowSaves(false)}
           />
         )}
         {summaryOpen && lastSummaryRef.current && (
@@ -364,163 +356,9 @@ export function GameSession({
   );
 }
 
-function TopBar({
-  date,
-  round,
-  nationCount,
-  provinceCount,
-  playerNation,
-  busy,
-  pacingHint,
-  onEndTurn,
-  onExit,
-  onShowSaves,
-  onOpenPlayerPanel,
-  error,
-}: {
-  date: string;
-  round: number;
-  nationCount: number;
-  provinceCount: number;
-  playerNation: import("../../lib/game/types").Nation | null;
-  busy: boolean;
-  pacingHint: number | null;
-  onEndTurn: (days: number) => void;
-  onExit: () => void;
-  onShowSaves: () => void;
-  onOpenPlayerPanel: () => void;
-  error: string | null;
-}) {
-  return (
-    <div style={topBarStyle}>
-      <button onClick={onExit} style={exitButtonStyle}>
-        ← Menu
-      </button>
-      {playerNation && (
-        <button onClick={onOpenPlayerPanel} style={playerBadgeStyle} title="Open your country panel">
-          <span
-            style={{
-              width: 12,
-              height: 12,
-              background: colorForMapcolor(playerNation.map_color),
-              borderRadius: 2,
-              boxShadow: "0 0 0 1px rgba(255,255,255,0.18)",
-            }}
-          />
-          <span>{playerNation.name}</span>
-        </button>
-      )}
-      <div style={dateBlockStyle}>
-        <div style={dateStyle}>{formatDate(date)}</div>
-        <div style={roundStyle}>
-          Round {round}
-          {error && <span style={{ color: "var(--danger)", marginLeft: 10 }}>· {error}</span>}
-        </div>
-      </div>
-      <div style={statsStyle}>
-        <Pill label="Nations" value={String(nationCount)} />
-        <Pill label="Provinces" value={String(provinceCount)} />
-      </div>
-      <button onClick={onShowSaves} style={exitButtonStyle} title="Saves">
-        Saves
-      </button>
-      <TurnControls busy={busy} pacingHint={pacingHint} onEndTurn={onEndTurn} />
-    </div>
-  );
-}
-
-function Pill({ label, value }: { label: string; value: string }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-end",
-        padding: "2px 10px",
-      }}
-    >
-      <div style={{ color: "var(--fg-dim)", fontSize: "var(--fs-xs)" }}>{label}</div>
-      <div style={{ fontWeight: 600, fontSize: "var(--fs-sm)" }}>{value}</div>
-    </div>
-  );
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso + "T00:00:00Z");
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
-
 const containerStyle: React.CSSProperties = {
   position: "absolute",
   inset: 0,
   display: "flex",
   flexDirection: "column",
-};
-
-const topBarStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 16,
-  padding: "10px 20px",
-  background: "var(--surface-1)",
-  borderBottom: "1px solid var(--border)",
-  zIndex: 5,
-};
-
-const exitButtonStyle: React.CSSProperties = {
-  padding: "6px 12px",
-  background: "transparent",
-  color: "var(--fg-muted)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-md)",
-  cursor: "pointer",
-  fontFamily: "inherit",
-  fontSize: "var(--fs-sm)",
-  fontWeight: 500,
-};
-
-const dateBlockStyle: React.CSSProperties = {
-  flex: 1,
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-};
-
-const dateStyle: React.CSSProperties = {
-  fontSize: "var(--fs-lg)",
-  fontWeight: 700,
-  letterSpacing: "-0.015em",
-  lineHeight: 1.1,
-};
-
-const roundStyle: React.CSSProperties = {
-  fontSize: "var(--fs-xs)",
-  color: "var(--fg-muted)",
-};
-
-const statsStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 4,
-};
-
-const playerBadgeStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  padding: "6px 12px",
-  background: "var(--surface-2)",
-  color: "var(--fg)",
-  border: "1px solid var(--border-strong)",
-  borderRadius: "var(--radius-md)",
-  cursor: "pointer",
-  fontFamily: "inherit",
-  fontSize: "var(--fs-sm)",
-  fontWeight: 600,
-  letterSpacing: "-0.005em",
 };

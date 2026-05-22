@@ -139,7 +139,7 @@ function Drawer({
   onClose: () => void;
 }) {
   return (
-    <div style={drawerStyle}>
+    <div style={drawerStyle} className="ahd-motion-slide-right">
       <div style={drawerHeader}>
         <button onClick={onClose} style={closeButtonStyle} aria-label="Close">
           ×

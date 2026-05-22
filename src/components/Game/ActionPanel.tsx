@@ -185,19 +185,8 @@ export function ActionPanel({
 }
 
 const panelStyle: React.CSSProperties = {
-  position: "absolute",
-  bottom: 16,
-  left: 16,
-  width: 420,
-  maxWidth: "calc(100vw - 32px)",
-  background: "rgba(15, 17, 21, 0.92)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius-lg)",
-  padding: 14,
-  boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
-  zIndex: 12,
+  // Lives inside the CommandDock body — no absolute positioning.
+  width: "100%",
 };
 
 const headerRow: React.CSSProperties = {
