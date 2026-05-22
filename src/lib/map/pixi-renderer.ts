@@ -15,6 +15,7 @@ import type { ProvinceFeature } from "./types";
 import { worldExtentAtBase } from "./renderer";
 import type { City, CityKind } from "./cities";
 import type { Country } from "./countries";
+import type { CountryOutlineFeature } from "./country-outlines";
 
 /**
  * A geoPath context that captures projected polygon rings as flat number
@@ -54,6 +55,8 @@ export interface SceneHandles {
   fillsContainer: Container;
   /** Child container of mapContainer — borders (Graphics). */
   bordersContainer: Container;
+  /** Child container of mapContainer — country highlight outlines (Graphics). */
+  highlightContainer: Container;
   /** Sibling container on the stage — city markers, kept at constant screen size. */
   cityContainer: Container;
   /** Sibling container on the stage — country labels (above provinces, below cities). */
@@ -88,6 +91,13 @@ export async function createPixiScene(
   mapContainer.addChild(bordersContainer);
   app.stage.addChild(mapContainer);
 
+  // Highlight outlines live on the STAGE (not inside mapContainer) so we can
+  // re-stroke per-frame in screen pixels — stroke width stays readable at any
+  // zoom (gets thinner as you zoom in instead of growing into solid blobs).
+  const highlightContainer = new Container();
+  highlightContainer.eventMode = "none";
+  app.stage.addChild(highlightContainer);
+
   // Country labels go between provinces and cities. Like cities, they live on
   // the stage (not inside mapContainer) so font size stays constant.
   const countryLabelContainer = new Container();
@@ -106,6 +116,7 @@ export async function createPixiScene(
     tileContainer,
     fillsContainer,
     bordersContainer,
+    highlightContainer,
     cityContainer,
     countryLabelContainer,
     destroy() {
@@ -219,6 +230,143 @@ export function buildPolygons(
     pixelLine: true,
   });
   bordersContainer.addChild(borders);
+}
+
+// ─── Country highlight (using pre-built outlines) ──────────────────────────
+
+export interface HighlightGroupInput {
+  /** ISO3 code of the country to outline. */
+  iso_a3: string;
+  /** Hex color string, e.g. "#7aa2f7". */
+  color: string;
+  /** Stroke width in screen pixels at zoom 1. Shrinks as user zooms in. */
+  baseWidth: number;
+  /** 0..1 opacity. */
+  alpha: number;
+}
+
+interface PreparedHighlight {
+  /** Flat polylines: each entry is one ring as [x0, y0, x1, y1, ...] in
+   *  canvas-pixel coords at zoom 1. Multiple entries for multi-polygon
+   *  countries (islands etc.). */
+  rings: Float32Array[];
+  color: number;
+  baseWidth: number;
+  alpha: number;
+  graphics: Graphics;
+}
+
+export interface HighlightLayer {
+  container: Container;
+  prepared: PreparedHighlight[];
+}
+
+export function createHighlightLayer(container: Container): HighlightLayer {
+  return { container, prepared: [] };
+}
+
+/**
+ * Project a country's pre-built outline polygon into canvas-pixel rings.
+ *
+ * Each ring (multi-polygon countries have several) gets stored as a flat
+ * Float32Array. `updateCountryHighlight` then applies the current view's
+ * pan+zoom and strokes it per-frame with a screen-pixel width that shrinks
+ * as the user zooms in.
+ *
+ * Using pre-built outlines (one MultiPolygon per ISO3 in `country-outlines.
+ * geojson`, produced by mapshaper -dissolve2 adm0_a3) means no internal
+ * borders ever appear — there's literally nothing to filter.
+ */
+export function buildCountryHighlight(
+  layer: HighlightLayer,
+  outlinesByIso: Map<string, CountryOutlineFeature>,
+  width: number,
+  height: number,
+  groups: HighlightGroupInput[],
+): void {
+  for (const child of [...layer.container.children]) {
+    layer.container.removeChild(child);
+    child.destroy({ children: true });
+  }
+  layer.prepared.length = 0;
+
+  if (groups.every((g) => !g.iso_a3)) return;
+
+  const projection = geoEquirectangular()
+    .scale(width / (2 * Math.PI))
+    .translate([width / 2, height / 2])
+    .rotate([0, 0])
+    .center([0, 0]);
+  const collector = new RingCollector();
+  const path: GeoPath = geoPath(projection, collector as any);
+
+  for (const group of groups) {
+    if (!group.iso_a3) continue;
+    const feature = outlinesByIso.get(group.iso_a3);
+    if (!feature) continue;
+    const { rgb } = hexToInt(group.color);
+
+    collector.reset();
+    path(feature as any);
+    const rings = collector.rings
+      .filter((r) => r.length >= 6)
+      .map((r) => new Float32Array(r));
+    if (rings.length === 0) continue;
+
+    const g = new Graphics();
+    layer.container.addChild(g);
+    layer.prepared.push({
+      rings,
+      color: rgb,
+      baseWidth: group.baseWidth,
+      alpha: group.alpha,
+      graphics: g,
+    });
+  }
+}
+
+/**
+ * Redraw highlight strokes for the current view. Stroke width scales down
+ * with zoom so deep zooms don't show 30px-thick solid lines, but stays at
+ * least 1px so it remains visible.
+ *
+ * Each ring is drawn as a closed polyline (moveTo + N lineTos) so PIXI can
+ * apply round joins/caps cleanly. No segment-by-segment hops → no breaks at
+ * shared vertices.
+ */
+export function updateCountryHighlight(
+  layer: HighlightLayer,
+  view: { panX: number; panY: number; zoom: number },
+): void {
+  for (const p of layer.prepared) {
+    p.graphics.clear();
+
+    for (const ring of p.rings) {
+      if (ring.length < 4) continue;
+      const x0 = ring[0] * view.zoom + view.panX;
+      const y0 = ring[1] * view.zoom + view.panY;
+      p.graphics.moveTo(x0, y0);
+      for (let i = 2; i < ring.length; i += 2) {
+        const x = ring[i] * view.zoom + view.panX;
+        const y = ring[i + 1] * view.zoom + view.panY;
+        p.graphics.lineTo(x, y);
+      }
+    }
+
+    // Width shrinks as you zoom in: base / sqrt(zoom), clamped 1..base*1.2.
+    const screenW = Math.min(
+      p.baseWidth * 1.2,
+      Math.max(1.0, p.baseWidth / Math.sqrt(Math.max(1, view.zoom))),
+    );
+    p.graphics.stroke({
+      width: screenW,
+      color: p.color,
+      alpha: p.alpha,
+      pixelLine: false,
+      cap: "round",
+      join: "round",
+    });
+  }
 }
 
 // ─── Tile pyramid loader ───────────────────────────────────────────────────
@@ -644,42 +792,61 @@ export function createCityLayer(container: Container): CityLayer {
 }
 
 /**
+ * The smallest zoom level that keeps the world filling at least the larger of
+ * the canvas dimensions (so you can never zoom out past the world bounds).
+ */
+export function minZoomToFit(
+  canvas: { w: number; h: number },
+  worldExtent: { x0: number; y0: number; x1: number; y1: number },
+): number {
+  const worldW = worldExtent.x1 - worldExtent.x0;
+  const worldH = worldExtent.y1 - worldExtent.y0;
+  if (worldW <= 0 || worldH <= 0) return 1;
+  // Use the SMALLER of the two ratios — that's the level at which the world
+  // just touches the canvas on its larger side. Going below that would leave
+  // empty bands.
+  return Math.min(canvas.w / worldW, canvas.h / worldH);
+}
+
+/**
  * Clamp pan + zoom so the world stays on-screen:
- *   - If the scaled world is SMALLER than the canvas (zoomed out enough),
- *     pan is forced to center the world.
- *   - If the scaled world is LARGER than the canvas (zoomed in), pan is
- *     clamped so the world bounds still cover the canvas — you can't push
- *     the world entirely off-screen.
+ *   - Zoom is floored at `minZoomToFit` — you can't zoom out past world bounds.
+ *   - If the scaled world is SMALLER than the canvas in a given dimension
+ *     (rare; only when canvas aspect ≠ world aspect), pan centers that axis.
+ *   - If LARGER, pan is clamped so the world bounds still cover the canvas.
  */
 export function clampView(
   view: { panX: number; panY: number; zoom: number },
   canvas: { w: number; h: number },
   worldExtent: { x0: number; y0: number; x1: number; y1: number },
 ): { panX: number; panY: number; zoom: number } {
+  const minZ = minZoomToFit(canvas, worldExtent);
+  const zoom = Math.max(minZ, view.zoom);
+
   const worldW = worldExtent.x1 - worldExtent.x0;
   const worldH = worldExtent.y1 - worldExtent.y0;
-  const scaledW = worldW * view.zoom;
-  const scaledH = worldH * view.zoom;
+  const scaledW = worldW * zoom;
+  const scaledH = worldH * zoom;
 
   let panX = view.panX;
   let panY = view.panY;
 
   if (scaledW <= canvas.w) {
-    panX = (canvas.w - scaledW) / 2 - worldExtent.x0 * view.zoom;
+    panX = (canvas.w - scaledW) / 2 - worldExtent.x0 * zoom;
   } else {
-    const minPanX = canvas.w - worldExtent.x1 * view.zoom;
-    const maxPanX = -worldExtent.x0 * view.zoom;
+    const minPanX = canvas.w - worldExtent.x1 * zoom;
+    const maxPanX = -worldExtent.x0 * zoom;
     panX = Math.max(minPanX, Math.min(maxPanX, panX));
   }
   if (scaledH <= canvas.h) {
-    panY = (canvas.h - scaledH) / 2 - worldExtent.y0 * view.zoom;
+    panY = (canvas.h - scaledH) / 2 - worldExtent.y0 * zoom;
   } else {
-    const minPanY = canvas.h - worldExtent.y1 * view.zoom;
-    const maxPanY = -worldExtent.y0 * view.zoom;
+    const minPanY = canvas.h - worldExtent.y1 * zoom;
+    const maxPanY = -worldExtent.y0 * zoom;
     panY = Math.max(minPanY, Math.min(maxPanY, panY));
   }
 
-  return { panX, panY, zoom: view.zoom };
+  return { panX, panY, zoom };
 }
 
 export function resizeRenderer(

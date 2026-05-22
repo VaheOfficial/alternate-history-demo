@@ -2,6 +2,8 @@ import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { downloadCached } from "./lib/download.ts";
 import { simplifyToTopoJson } from "./lib/simplify.ts";
+import { clusterProvinces } from "./lib/cluster-provinces.ts";
+import { buildCountryOutlines } from "./lib/country-outlines.ts";
 import { extractMeta } from "./lib/extract-meta.ts";
 import { extractCities } from "./lib/extract-cities.ts";
 import { extractCountries } from "./lib/extract-countries.ts";
@@ -38,16 +40,56 @@ async function main() {
     destination: rawPath,
     expectedMinBytes: 10 * 1024 * 1024,
   });
+
+  // Tile-balancing: cluster small admin_1 polygons in over-subdivided countries
+  // into anchors so per-country tile counts roughly track country area.
+  const clusteredPath = `${CACHE_DIR}/ne_10m_admin_1_clustered.geojson`;
+  const cluster = await clusterProvinces(rawPath, clusteredPath);
+  console.log(
+    `[cluster] ${cluster.inputFeatures} polygons → ${cluster.groupsAfter} groups`,
+  );
+  for (const r of cluster.reductions.slice(0, 12)) {
+    console.log(`  ${r.iso}: ${r.before} → ${r.after}`);
+  }
+  if (cluster.reductions.length > 12) {
+    console.log(`  …and ${cluster.reductions.length - 12} more countries reduced`);
+  }
+
+  const dissolvedGeoPath = `${CACHE_DIR}/ne_10m_admin_1_dissolved.geojson`;
   const { bytes } = await simplifyToTopoJson({
-    inputGeoJsonPath: rawPath,
+    inputGeoJsonPath: clusteredPath,
     outputTopoJsonPath: `${PUBLIC_DIR}/world.topojson`,
+    outputGeoJsonPath: dissolvedGeoPath,
     retainFraction: RETAIN_FRACTION,
+    dissolveBy: "merge_group",
+    // Preserve original metadata so extract-meta + extract-cities still work.
+    copyFields: [
+      "name",
+      "adm0_a3",
+      "iso_3166_2",
+      "adm1_code",
+      "mapcolor13",
+      "mapcolor9",
+      "scalerank",
+      "merge_group",
+    ],
   });
   console.log(
     `[build-map] world.topojson written (${(bytes / 1024 / 1024).toFixed(2)} MB)`,
   );
-  const meta = await extractMeta(rawPath, `${PUBLIC_DIR}/world-meta.json`);
+  const meta = await extractMeta(dissolvedGeoPath, `${PUBLIC_DIR}/world-meta.json`);
   console.log(`[build-map] world-meta.json written (${meta.count} provinces)`);
+
+  // Pre-computed country silhouettes for the highlight layer — one polygon
+  // per ISO3, no interior province lines. Avoids the runtime
+  // outer-boundary reconstruction that was leaving fragments behind.
+  const outlines = await buildCountryOutlines(
+    dissolvedGeoPath,
+    `${PUBLIC_DIR}/country-outlines.geojson`,
+  );
+  console.log(
+    `[build-map] country-outlines.geojson written (${outlines.countries} countries, ${(outlines.bytes / 1024).toFixed(1)} KB)`,
+  );
 
   // --- Country polygons (names + label anchors) ---
   const countriesRawPath = `${CACHE_DIR}/ne_10m_admin_0_countries.geojson`;

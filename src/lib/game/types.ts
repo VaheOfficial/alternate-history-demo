@@ -88,6 +88,30 @@ export interface GameClock {
   round: number;
 }
 
+export type TreatyKind =
+  | "non_aggression"
+  | "defensive_pact"
+  | "alliance"
+  | "trade_agreement"
+  | "ceasefire"
+  | "peace_treaty"
+  | "vassalage";
+
+export interface TreatyTerms {
+  territory_transfers: unknown[];
+  tribute_per_year: number;
+  extra_clauses: string[];
+}
+
+export interface Treaty {
+  id: string;
+  kind: TreatyKind;
+  parties: string[];
+  signed_on: string;
+  expires_on: string | null;
+  terms: TreatyTerms;
+}
+
 export interface World {
   save_id: string;
   branch_id: string;
@@ -97,7 +121,7 @@ export interface World {
   provinces: Province[];
   units: unknown[];
   npcs: unknown[];
-  treaties: unknown[];
+  treaties: Treaty[];
   crises: unknown[];
   frontlines: unknown[];
   events: unknown[];

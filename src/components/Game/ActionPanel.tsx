@@ -62,11 +62,23 @@ export function ActionPanel({
   };
 
   const noProvider = providers.length === 0;
+  const playerNation = world.player_nation
+    ? world.nations.find((n) => n.id === world.player_nation) ?? null
+    : null;
 
   return (
     <div style={panelStyle}>
       <div style={headerRow}>
-        <div style={headerTitle}>Issue an order</div>
+        <div>
+          <div style={headerTitle}>
+            {playerNation ? `Orders — ${playerNation.name}` : "Issue an order"}
+          </div>
+          {playerNation && (
+            <div style={subtitleStyle}>
+              You are the head of state. Speak in first person.
+            </div>
+          )}
+        </div>
         {!noProvider && (
           <div style={selectorRow}>
             <select
@@ -110,7 +122,11 @@ export function ActionPanel({
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder='e.g. "France pressures Germany to demilitarize the Saarland" or "Build up steel reserves quietly"'
+        placeholder={
+          playerNation
+            ? `e.g. "Open trade talks with our largest neighbor" or "Quietly build up steel reserves"`
+            : `e.g. "Open trade talks between France and Germany"`
+        }
         style={textareaStyle}
         rows={3}
         disabled={busy || noProvider}
@@ -204,6 +220,12 @@ const headerTitle: React.CSSProperties = {
   fontWeight: 700,
   fontSize: "var(--fs-md)",
   letterSpacing: "-0.01em",
+};
+
+const subtitleStyle: React.CSSProperties = {
+  color: "var(--fg-dim)",
+  fontSize: "var(--fs-xs)",
+  marginTop: 2,
 };
 
 const selectorRow: React.CSSProperties = {

@@ -5,7 +5,9 @@
 //! first slice; combat resolution, supply, production all land in Plan 05+.
 
 pub mod apply;
+pub mod economy;
 pub mod tick;
 
 pub use apply::{apply_actions, ApplyOutcome};
+pub use economy::run_economy_tick;
 pub use tick::advance_clock;

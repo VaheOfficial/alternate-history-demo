@@ -18,7 +18,9 @@ use super::npc::{
     Ideology, Npc, NpcPersona, NpcRole, PersonaArchetype, SpeechStyle,
 };
 use super::province::{Province, ResourceYield, Terrain};
+use super::treaty::{Treaty, TreatyKind, TreatyTerms};
 use super::world::World;
+use super::ids::TreatyId;
 
 // The map pipeline writes these into `public/`. We embed them at compile time
 // so the seeder works offline and doesn't depend on Tauri resource paths.
@@ -38,6 +40,13 @@ struct CountryRow {
     label_lon: f64,
     #[allow(dead_code)]
     label_lat: f64,
+    #[serde(default)]
+    population: i64,
+    #[serde(default)]
+    gdp_million_usd: i64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pop_rank: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +59,8 @@ struct ProvinceRow {
     shape_id: String,
     name: String,
     iso_country: String,
+    #[serde(default)]
+    area_deg2: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,27 +137,40 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
     let mut nation_by_iso: HashMap<String, NationId> = HashMap::new();
 
     for (iso, prov_rows) in &provinces_by_iso {
-        let display_name = country_by_iso
-            .get(iso.as_str())
+        let country_row = country_by_iso.get(iso.as_str()).copied();
+        let display_name = country_row
             .map(|c| c.name.as_str())
             .unwrap_or(iso.as_str());
-        let map_color = country_by_iso
-            .get(iso.as_str())
-            .map(|c| c.map_color)
-            .unwrap_or(1);
+        let map_color = country_row.map(|c| c.map_color).unwrap_or(1);
 
         let nation_id = NationId::new();
         let leader_id = NpcId::new();
 
-        // Rough nation-size proxy: number of provinces. Real numbers will come
-        // from per-country tables later. For now: 1k pop per "scale unit",
-        // 100 industry, treasury proportional.
+        // Real population + GDP from Natural Earth. Fall back to crude
+        // province-count estimates if the join misses (rare; covers obscure
+        // territories without country metadata).
         let prov_count = prov_rows.len() as i64;
-        let population = prov_count.saturating_mul(2_000_000);
-        let manpower = (population / 25).max(50_000);
-        let gdp = prov_count * 50_000_000_000; // very rough; refined later
-        let treasury = gdp / 20;
-        let industry = (prov_count as u32 * 2).max(5);
+        let population = match country_row {
+            Some(c) if c.population > 0 => c.population,
+            _ => prov_count.saturating_mul(500_000),
+        };
+        // GDP_MD is in millions; multiply by 1M for raw USD.
+        let gdp = match country_row {
+            Some(c) if c.gdp_million_usd > 0 => c.gdp_million_usd.saturating_mul(1_000_000),
+            _ => prov_count.saturating_mul(5_000_000_000),
+        };
+        // Manpower proxy: ~3.5% of population (military-age × willingness).
+        let manpower = ((population as f64 * 0.035) as i64).max(10_000);
+        // Treasury starts ~10% of GDP.
+        let treasury = gdp / 10;
+        // Industry proxy: log10(GDP_USD / 1e9), clamped to 1..200. So $1T GDP
+        // ≈ 30 IC, $20T ≈ 43 IC. Refined later by tech + production rules.
+        let industry = if gdp > 0 {
+            let log_billions = ((gdp as f64) / 1.0e9).max(1.0).log10();
+            ((log_billions * 12.0) as u32).clamp(1, 200)
+        } else {
+            5
+        };
 
         npcs.push(Npc {
             id: leader_id,
@@ -190,12 +214,56 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
         nation_by_iso.insert(iso.clone(), nation_id);
     }
 
-    // Build provinces, each owned by its iso_country's Nation.
-    let mut out_provinces: Vec<Province> = Vec::with_capacity(provinces.provinces.len());
-    for p in &provinces.provinces {
-        let Some(owner) = nation_by_iso.get(&p.iso_country) else {
+    // Build provinces. Each province gets:
+    //   - population: country POP_EST distributed by area share (with a floor
+    //     so even tiny islands aren't zero)
+    //   - base_industry: country industry distributed by area share too,
+    //     biased slightly toward larger provinces
+    //   - supply_value: scales with area (bigger = more supply to draw from)
+    let nation_by_iso_ref = &nation_by_iso;
+    let nations_ref = &nations;
+    // Build a small helper map: iso → (total_area, country_pop, country_industry)
+    let mut country_summary: HashMap<&str, (f64, i64, u32)> = HashMap::new();
+    for (iso, rows) in &provinces_by_iso {
+        let total_area: f64 = rows.iter().map(|r| r.area_deg2.max(0.0)).sum::<f64>();
+        let Some(nid) = nation_by_iso_ref.get(iso) else {
             continue;
         };
+        let Some(n) = nations_ref.iter().find(|n| n.id == *nid) else {
+            continue;
+        };
+        country_summary.insert(iso.as_str(), (total_area, n.population, n.industry_capacity));
+    }
+
+    let mut out_provinces: Vec<Province> = Vec::with_capacity(provinces.provinces.len());
+    for p in &provinces.provinces {
+        let Some(owner) = nation_by_iso_ref.get(&p.iso_country) else {
+            continue;
+        };
+        let (total_area, country_pop, country_industry) = country_summary
+            .get(p.iso_country.as_str())
+            .copied()
+            .unwrap_or((0.0, 1_000_000, 5));
+
+        let prov_area = p.area_deg2.max(0.0);
+        let share = if total_area > 0.0 {
+            (prov_area / total_area).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // Population: floor of 5k so tiny islands don't end up at zero.
+        let prov_pop =
+            ((country_pop as f64 * share) as i64).max(5_000);
+        // Industry distributed by area but only if country has ≥5 IC to share.
+        let prov_ind = if country_industry >= 5 {
+            ((country_industry as f64 * share) as u32).max(0)
+        } else {
+            0
+        };
+        // Supply: area-bucketed 1..10. Bigger province = more supply.
+        let supply = ((prov_area * 8.0) as u32).clamp(1, 10);
+
         out_provinces.push(Province {
             id: ProvinceId::new(),
             name: p.name.clone(),
@@ -203,14 +271,16 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
             owner: *owner,
             core_of: vec![*owner],
             terrain: Terrain::Plains, // refined later from a terrain map
-            population: 1_000_000,    // placeholder
-            base_industry: 1,
+            population: prov_pop,
+            base_industry: prov_ind,
             base_resources: ResourceYield::default(),
-            supply_value: 1,
+            supply_value: supply,
             is_capital: false,
             is_supply_hub: false,
         });
     }
+
+    let treaties = seed_alliances(&nation_by_iso, start);
 
     World {
         save_id: save,
@@ -221,11 +291,98 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
         provinces: out_provinces,
         units: vec![],
         npcs,
-        treaties: vec![],
+        treaties,
         crises: vec![],
         frontlines: vec![],
         events: vec![],
     }
+}
+
+/// Seed the major modern-day alliances and blocs as initial Treaties. Membership
+/// lists are correct as of ~2024; LLM can mutate via sign_treaty mid-game.
+fn seed_alliances(
+    nation_by_iso: &HashMap<String, NationId>,
+    signed_on: chrono::NaiveDate,
+) -> Vec<Treaty> {
+    let blocs: &[(&str, TreatyKind, &[&str])] = &[
+        (
+            "NATO",
+            TreatyKind::DefensivePact,
+            &[
+                "USA", "CAN", "GBR", "FRA", "DEU", "ITA", "ESP", "PRT", "BEL", "NLD",
+                "LUX", "DNK", "NOR", "ISL", "TUR", "GRC", "POL", "CZE", "HUN", "SVK",
+                "SVN", "EST", "LVA", "LTU", "BGR", "ROU", "HRV", "ALB", "MNE", "MKD",
+                "FIN", "SWE",
+            ],
+        ),
+        (
+            "CSTO",
+            TreatyKind::DefensivePact,
+            &["RUS", "BLR", "ARM", "KAZ", "KGZ", "TJK"],
+        ),
+        (
+            "European Union",
+            TreatyKind::TradeAgreement,
+            &[
+                "AUT", "BEL", "BGR", "HRV", "CYP", "CZE", "DNK", "EST", "FIN", "FRA",
+                "DEU", "GRC", "HUN", "IRL", "ITA", "LVA", "LTU", "LUX", "MLT", "NLD",
+                "POL", "PRT", "ROU", "SVK", "SVN", "ESP", "SWE",
+            ],
+        ),
+        (
+            "AUKUS",
+            TreatyKind::DefensivePact,
+            &["AUS", "GBR", "USA"],
+        ),
+        (
+            "ANZUS",
+            TreatyKind::DefensivePact,
+            &["AUS", "NZL", "USA"],
+        ),
+        (
+            "Arab League",
+            TreatyKind::Alliance,
+            &[
+                "DZA", "BHR", "COM", "DJI", "EGY", "IRQ", "JOR", "KWT", "LBN", "LBY",
+                "MAR", "MRT", "OMN", "PSE", "QAT", "SAU", "SOM", "SDN", "SYR", "TUN",
+                "ARE", "YEM",
+            ],
+        ),
+        (
+            "USMCA",
+            TreatyKind::TradeAgreement,
+            &["USA", "CAN", "MEX"],
+        ),
+        (
+            "BRICS",
+            TreatyKind::TradeAgreement,
+            &["BRA", "RUS", "IND", "CHN", "ZAF", "EGY", "ETH", "IRN", "ARE"],
+        ),
+    ];
+
+    let mut treaties = Vec::new();
+    for (name, kind, members) in blocs {
+        let parties: Vec<NationId> = members
+            .iter()
+            .filter_map(|iso| nation_by_iso.get(*iso).copied())
+            .collect();
+        if parties.len() < 2 {
+            continue; // skip if too few members exist in the world
+        }
+        treaties.push(Treaty {
+            id: TreatyId::new(),
+            kind: *kind,
+            parties,
+            signed_on,
+            expires_on: None,
+            terms: TreatyTerms {
+                territory_transfers: Vec::new(),
+                tribute_per_year: 0,
+                extra_clauses: vec![format!("{} member", name)],
+            },
+        });
+    }
+    treaties
 }
 
 #[cfg(test)]
@@ -239,10 +396,11 @@ mod tests {
             BranchId::new(),
             NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
         );
-        // Sanity bounds — Natural Earth has 200+ countries, 4000+ provinces.
+        // Sanity bounds: NE admin_0 has 250+ countries; post-tile-clustering
+        // we get ~2500 provinces (down from raw 4596 — see cluster-provinces.ts).
         assert!(w.nations.len() >= 180, "got {} nations", w.nations.len());
         assert!(
-            w.provinces.len() >= 3_500,
+            w.provinces.len() >= 1_500,
             "got {} provinces",
             w.provinces.len()
         );
@@ -275,6 +433,8 @@ mod tests {
             .find(|n| n.iso_a3 == "USA")
             .expect("USA missing");
         let n = w.provinces.iter().filter(|p| p.owner == usa.id).count();
-        assert!(n >= 50, "USA has only {} provinces", n);
+        // USA caps at 25 after tile-clustering — was 50, dialed down so big
+        // countries don't drown the map in micro-tiles. See cluster-provinces.ts.
+        assert!(n >= 20, "USA has only {} provinces", n);
     }
 }

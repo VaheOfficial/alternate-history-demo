@@ -24,6 +24,12 @@ export interface Country {
   bbox: [number, number, number, number];
   /** Rough country area in deg^2 (bbox-derived; used for label size scaling). */
   area_deg2: number;
+  /** Natural Earth POP_EST (people). */
+  population: number;
+  /** Natural Earth GDP_MD (millions USD). */
+  gdp_million_usd: number;
+  /** Natural Earth POP_RANK 0..13 (higher = more populous). */
+  pop_rank: number;
 }
 
 export interface CountriesFile {
@@ -83,6 +89,13 @@ export async function extractCountries(
     const label_lon = Number.isFinite(labelX) ? labelX : (bbox[0] + bbox[2]) / 2;
     const label_lat = Number.isFinite(labelY) ? labelY : (bbox[1] + bbox[3]) / 2;
 
+    const population = Math.max(0, Math.round(Number(p.POP_EST ?? p.pop_est ?? 0)));
+    const gdp_million_usd = Math.max(
+      0,
+      Math.round(Number(p.GDP_MD ?? p.gdp_md ?? p.GDP_MD_EST ?? 0)),
+    );
+    const pop_rank = Math.max(0, Math.round(Number(p.POP_RANK ?? p.pop_rank ?? 0)));
+
     countries.push({
       iso_a3,
       name,
@@ -93,6 +106,9 @@ export async function extractCountries(
       label_lat,
       bbox,
       area_deg2,
+      population,
+      gdp_million_usd,
+      pop_rank,
     });
   }
 

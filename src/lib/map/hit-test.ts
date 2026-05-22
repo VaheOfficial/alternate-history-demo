@@ -66,7 +66,15 @@ export function pickProvince(
 
   for (const p of index.provinces) {
     const [w, s, e, n] = p.bbox;
-    if (lon < w || lon > e || lat < s || lat > n) continue;
+    // d3-geo's geoBounds returns a WRAP-AROUND bbox when a polygon crosses
+    // the antimeridian (e.g. Alaska, Russia, Fiji): `w > e`. The longitude
+    // is in range iff lon >= w OR lon <= e — NOT the standard between-test.
+    if (lat < s || lat > n) continue;
+    if (w <= e) {
+      if (lon < w || lon > e) continue;
+    } else {
+      if (lon < w && lon > e) continue;
+    }
     if (geoContains(p.feature, [lon, lat])) {
       return p.shape_id;
     }

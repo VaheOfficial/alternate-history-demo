@@ -30,6 +30,12 @@ export function CountryDrawer({
     .sort((a, b) => b.population - a.population)
     .slice(0, 8);
 
+  // Treaties this nation is a member of.
+  const treaties = useMemo(
+    () => world.treaties.filter((t) => t.parties.includes(nationId)),
+    [world.treaties, nationId],
+  );
+
   return (
     <Drawer onClose={onClose}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -73,6 +79,34 @@ export function CountryDrawer({
         <Stat label="War support" value={`${nation.war_support}`} />
         <Stat label="Doctrine" value={titleCase(nation.doctrine)} />
       </Section>
+
+      {treaties.length > 0 && (
+        <Section title={`Treaties & blocs (${treaties.length})`}>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", gridColumn: "1 / -1" }}>
+            {treaties.map((t) => {
+              const label =
+                t.terms.extra_clauses[0] ?? titleCase(t.kind);
+              return (
+                <li
+                  key={t.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    padding: "4px 0",
+                    borderBottom: "1px solid var(--border)",
+                    fontSize: "var(--fs-sm)",
+                  }}
+                >
+                  <span>{label}</span>
+                  <span style={{ color: "var(--fg-muted)", fontSize: "var(--fs-xs)" }}>
+                    {titleCase(t.kind)} · {t.parties.length} members
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
 
       <Section title={`Top provinces (${provinces.length} total)`}>
         <ul style={{ margin: 0, padding: 0, listStyle: "none", gridColumn: "1 / -1" }}>

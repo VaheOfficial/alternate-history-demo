@@ -8,6 +8,7 @@ import { ProvinceTooltip } from "./ProvinceTooltip";
 import { TurnControls } from "./TurnControls";
 import { ActionPanel } from "./ActionPanel";
 import { SavesDrawer } from "./SavesDrawer";
+import { colorForMapcolor } from "../../lib/map/renderer";
 
 export function GameSession({
   world: initialWorld,
@@ -29,6 +30,20 @@ export function GameSession({
     () => buildOwnershipColors(world, { selectedShape }),
     [world, selectedShape],
   );
+
+  // Per-country highlight is driven by ISO3 — the WorldMap looks up the
+  // pre-built country outline polygon and strokes it directly.
+  const playerIso = useMemo(() => {
+    if (!world.player_nation) return null;
+    return (
+      world.nations.find((n) => n.id === world.player_nation)?.iso_a3 ?? null
+    );
+  }, [world.player_nation, world.nations]);
+
+  const selectedIso = useMemo(() => {
+    if (!selectedNation) return null;
+    return world.nations.find((n) => n.id === selectedNation)?.iso_a3 ?? null;
+  }, [selectedNation, world.nations]);
 
   const hoveredProvince = useMemo(
     () => (hover ? findProvinceByShape(world, hover.shape_id) : null),
@@ -72,6 +87,10 @@ export function GameSession({
     if (r.next_tick_days != null) setPacingHint(r.next_tick_days);
   };
 
+  const playerNation = world.player_nation
+    ? world.nations.find((n) => n.id === world.player_nation) ?? null
+    : null;
+
   return (
     <div style={containerStyle}>
       <TopBar
@@ -79,16 +98,22 @@ export function GameSession({
         round={world.clock.round}
         nationCount={world.nations.length}
         provinceCount={world.provinces.length}
+        playerNation={playerNation}
         busy={busy}
         pacingHint={pacingHint}
         onEndTurn={handleEndTurn}
         onExit={onExit}
         onShowSaves={() => setShowSaves(true)}
+        onOpenPlayerPanel={() => {
+          if (playerNation) setSelectedNation(playerNation.id);
+        }}
         error={turnError}
       />
       <div style={{ position: "relative", flex: 1, overflow: "hidden" }}>
         <WorldMap
           ownershipColors={ownershipColors}
+          playerIso={playerIso}
+          selectedIso={selectedIso}
           onProvinceHover={setHover}
           onProvinceClick={handleClick}
         />
@@ -128,22 +153,26 @@ function TopBar({
   round,
   nationCount,
   provinceCount,
+  playerNation,
   busy,
   pacingHint,
   onEndTurn,
   onExit,
   onShowSaves,
+  onOpenPlayerPanel,
   error,
 }: {
   date: string;
   round: number;
   nationCount: number;
   provinceCount: number;
+  playerNation: import("../../lib/game/types").Nation | null;
   busy: boolean;
   pacingHint: number | null;
   onEndTurn: (days: number) => void;
   onExit: () => void;
   onShowSaves: () => void;
+  onOpenPlayerPanel: () => void;
   error: string | null;
 }) {
   return (
@@ -151,6 +180,20 @@ function TopBar({
       <button onClick={onExit} style={exitButtonStyle}>
         ← Menu
       </button>
+      {playerNation && (
+        <button onClick={onOpenPlayerPanel} style={playerBadgeStyle} title="Open your country panel">
+          <span
+            style={{
+              width: 12,
+              height: 12,
+              background: colorForMapcolor(playerNation.map_color),
+              borderRadius: 2,
+              boxShadow: "0 0 0 1px rgba(255,255,255,0.18)",
+            }}
+          />
+          <span>{playerNation.name}</span>
+        </button>
+      )}
       <div style={dateBlockStyle}>
         <div style={dateStyle}>{formatDate(date)}</div>
         <div style={roundStyle}>
@@ -248,4 +291,20 @@ const statsStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 4,
+};
+
+const playerBadgeStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "6px 12px",
+  background: "var(--surface-2)",
+  color: "var(--fg)",
+  border: "1px solid var(--border-strong)",
+  borderRadius: "var(--radius-md)",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "var(--fs-sm)",
+  fontWeight: 600,
+  letterSpacing: "-0.005em",
 };

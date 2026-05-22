@@ -4,26 +4,34 @@ import { buildCountryFillMap } from "../../lib/map/renderer";
 import {
   applyView,
   buildCities,
+  buildCountryHighlight,
   buildCountryLabels,
   buildPolygons,
   clampView,
   createCityLayer,
   createCountryLabelLayer,
+  createHighlightLayer,
   createPixiScene,
   createTileSet,
   resetTiles,
   resizeRenderer,
   updateCities,
+  updateCountryHighlight,
   updateCountryLabels,
   updateTiles,
   worldExtentAtBase,
   type CityLayer,
   type CountryLabelLayer,
+  type HighlightLayer,
   type SceneHandles,
   type TileSet,
 } from "../../lib/map/pixi-renderer";
 import { loadCities, type City } from "../../lib/map/cities";
 import { loadCountries, type Country } from "../../lib/map/countries";
+import {
+  loadCountryOutlines,
+  type CountryOutlineIndex,
+} from "../../lib/map/country-outlines";
 import { buildProvinceIndex, pickProvince, type ProvinceIndex } from "../../lib/map/hit-test";
 
 const COLORS = {
@@ -61,10 +69,16 @@ export interface ProvinceHoverInfo {
 
 export function WorldMap({
   ownershipColors,
+  playerIso,
+  selectedIso,
   onProvinceHover,
   onProvinceClick,
 }: {
   ownershipColors?: Map<string, string>;
+  /** ISO3 of the player's nation — outlined permanently. */
+  playerIso?: string | null;
+  /** ISO3 of a currently-clicked country — outlined transiently. */
+  selectedIso?: string | null;
   onProvinceHover?: (info: ProvinceHoverInfo | null) => void;
   onProvinceClick?: (shape_id: string) => void;
 }) {
@@ -75,6 +89,7 @@ export function WorldMap({
   const tilesRef = useRef<TileSet | null>(null);
   const cityLayerRef = useRef<CityLayer | null>(null);
   const countryLayerRef = useRef<CountryLabelLayer | null>(null);
+  const highlightLayerRef = useRef<HighlightLayer | null>(null);
   const indexRef = useRef<ProvinceIndex | null>(null);
 
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
@@ -84,14 +99,16 @@ export function WorldMap({
   const [ready, setReady] = useState(false);
   const [cities, setCities] = useState<City[] | null>(null);
   const [countries, setCountries] = useState<Country[] | null>(null);
+  const [outlines, setOutlines] = useState<CountryOutlineIndex | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([loadCities(), loadCountries()])
-      .then(([c, cs]) => {
+    Promise.all([loadCities(), loadCountries(), loadCountryOutlines()])
+      .then(([c, cs, os]) => {
         if (cancelled) return;
         setCities(c);
         setCountries(cs);
+        setOutlines(os);
       })
       .catch(() => {
         // fall through with no labels
@@ -146,6 +163,7 @@ export function WorldMap({
       );
       cityLayerRef.current = createCityLayer(scene.cityContainer);
       countryLayerRef.current = createCountryLabelLayer(scene.countryLabelContainer);
+      highlightLayerRef.current = createHighlightLayer(scene.highlightContainer);
       setReady(true);
     })();
 
@@ -156,6 +174,7 @@ export function WorldMap({
       tilesRef.current = null;
       cityLayerRef.current = null;
       countryLayerRef.current = null;
+      highlightLayerRef.current = null;
       indexRef.current = null;
       setReady(false);
     };
@@ -168,7 +187,8 @@ export function WorldMap({
     const tiles = tilesRef.current;
     const cityLayer = cityLayerRef.current;
     const countryLayer = countryLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !countryLayer || !ready) return;
+    const highlightLayer = highlightLayerRef.current;
+    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !ready) return;
     if (state.status !== "ready") return;
 
     resizeRenderer(scene.app, size.w, size.h);
@@ -189,6 +209,40 @@ export function WorldMap({
     if (countries) buildCountryLabels(countryLayer, countries, size.w, size.h);
     indexRef.current = buildProvinceIndex(state.data.features, size.w, size.h);
 
+    // Outer-boundary highlight using pre-built per-country outlines.
+    // Internal province borders are gone-by-construction (mapshaper
+    // dissolves on adm0_a3 during the build).
+    if (outlines) {
+      buildCountryHighlight(
+        highlightLayer,
+        outlines,
+        size.w,
+        size.h,
+        [
+          ...(playerIso
+            ? [
+                {
+                  iso_a3: playerIso,
+                  color: "#7aa2f7",
+                  baseWidth: 3.0,
+                  alpha: 0.95,
+                },
+              ]
+            : []),
+          ...(selectedIso
+            ? [
+                {
+                  iso_a3: selectedIso,
+                  color: "#f5d76e",
+                  baseWidth: 2.6,
+                  alpha: 0.95,
+                },
+              ]
+            : []),
+        ],
+      );
+    }
+
     resetTiles(tiles, worldExtentAtBase(size.w, size.h));
     const clamped = clampToWorld(view, size);
     const applyV = clamped;
@@ -199,19 +253,22 @@ export function WorldMap({
     updateTiles(tiles, applyV, { w: size.w, h: size.h });
     updateCities(cityLayer, applyV, { w: size.w, h: size.h });
     updateCountryLabels(countryLayer, applyV, { w: size.w, h: size.h });
-  }, [ready, state, size, effectiveFill, cities, countries]);
+    updateCountryHighlight(highlightLayer, applyV);
+  }, [ready, state, size, effectiveFill, cities, countries, outlines, playerIso, selectedIso]);
 
-  // Per-view update: apply transform + sync tile / city / country visibility.
+  // Per-view update: apply transform + sync tile / city / country / highlight.
   useEffect(() => {
     const scene = sceneRef.current;
     const tiles = tilesRef.current;
     const cityLayer = cityLayerRef.current;
     const countryLayer = countryLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !countryLayer || !ready) return;
+    const highlightLayer = highlightLayerRef.current;
+    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !ready) return;
     applyView(scene.mapContainer, view);
     updateTiles(tiles, view, { w: size.w, h: size.h });
     updateCities(cityLayer, view, { w: size.w, h: size.h });
     updateCountryLabels(countryLayer, view, { w: size.w, h: size.h });
+    updateCountryHighlight(highlightLayer, view);
   }, [view, ready, size.w, size.h]);
 
   // Drag (pan) — also tracks recent drag distance so a click that follows a

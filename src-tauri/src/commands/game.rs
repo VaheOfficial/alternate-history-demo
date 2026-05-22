@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::engine::{advance_clock, apply_actions, ApplyOutcome};
+use crate::engine::{advance_clock, apply_actions, run_economy_tick, ApplyOutcome};
 use crate::error::{AppError, Result};
 use crate::providers::types::{ChatMessage, ChatRequest, Role};
 use crate::saves::snapshot::save_snapshot;
@@ -16,7 +16,8 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
-    let advanced = advance_clock(world, days);
+    let mut advanced = advance_clock(world, days);
+    run_economy_tick(&mut advanced, days.max(1));
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
 }
@@ -157,9 +158,26 @@ fn build_system_prompt(world: &World) -> String {
   "next_tick_days": <integer, 1..365 — how many days the engine should advance after applying these>
 }"#;
 
+    let player_clause = match world.player_nation
+        .and_then(|id| world.nations.iter().find(|n| n.id == id))
+    {
+        Some(p) => format!(
+            "THE PLAYER CONTROLS: {} (iso={}, id={}).\n\
+            Treat first-person language ('I', 'we', 'us') and bare verbs ('invade', 'demand', \n\
+            'sign a pact with', 'build up') as the player's nation acting. Only that nation \n\
+            initiates actions; other nations respond plausibly inside the narrative but do \n\
+            NOT spawn typed actions of their own (they'll get their own turns later).\n\n",
+            p.name, p.iso_a3, p.id
+        ),
+        None => "THE PLAYER HAS NO ASSIGNED NATION YET — interpret the text as a neutral \
+            observer steering the world.\n\n"
+            .to_string(),
+    };
+
     format!(
         "You are the rules adjudicator for an alternate-history grand-strategy game.\n\
-        Date in-game: {}.\n\
+        Date in-game: {}.\n\n\
+        {}\
         The player describes what they want to do. You decide whether it is plausible,\n\
         narrate the outcome in 1-3 paragraphs, and emit a strict JSON envelope describing\n\
         the world-state changes.\n\n\
@@ -172,7 +190,7 @@ fn build_system_prompt(world: &World) -> String {
         - Use ONLY NationId / ProvinceId / NpcId values from the world summary below.\n\
         - Never invent IDs.\n\n\
         SCHEMA:\n{}\n",
-        world.clock.current_date, action_schema
+        world.clock.current_date, player_clause, action_schema
     )
 }
 
@@ -181,19 +199,19 @@ fn build_user_prompt(world: &World, player_text: &str) -> String {
         .player_nation
         .and_then(|id| world.nations.iter().find(|n| n.id == id));
 
-    let mut nations: Vec<&crate::world::nation::Nation> = world.nations.iter().collect();
-    nations.sort_by_key(|n| -(n.industry_capacity as i64));
-    let top: Vec<String> = nations
+    // Top 30 by industry — get full economic detail.
+    let mut by_industry: Vec<&crate::world::nation::Nation> = world.nations.iter().collect();
+    by_industry.sort_by_key(|n| -(n.industry_capacity as i64));
+    let top: Vec<String> = by_industry
         .iter()
-        .take(20)
+        .take(30)
         .map(|n| {
             format!(
-                "{} ({}, iso={}): gov={:?}, pop={}, industry={}, stability={}, id={}",
+                "{} (iso={}): gov={:?}, pop={}M, industry={}, stability={}, id={}",
                 n.name,
                 n.iso_a3,
-                n.iso_a3,
                 n.government,
-                n.population,
+                n.population / 1_000_000,
                 n.industry_capacity,
                 n.stability,
                 n.id
@@ -201,26 +219,82 @@ fn build_user_prompt(world: &World, player_text: &str) -> String {
         })
         .collect();
 
+    // FULL nation directory — every nation as a compact iso → id row so the LLM
+    // can reference any country, not just the top 30. This fixes the "Canada
+    // isn't in the world summary" rejection class.
+    let mut by_name: Vec<&crate::world::nation::Nation> = world.nations.iter().collect();
+    by_name.sort_by(|a, b| a.name.cmp(&b.name));
+    let directory: Vec<String> = by_name
+        .iter()
+        .map(|n| format!("{}={}|{}", n.iso_a3, n.id, n.name))
+        .collect();
+
+    // Treaty list — also useful context. Compact form.
+    let treaty_lines: Vec<String> = world
+        .treaties
+        .iter()
+        .take(40)
+        .map(|t| {
+            let members: Vec<String> = t
+                .parties
+                .iter()
+                .filter_map(|pid| world.nations.iter().find(|n| n.id == *pid))
+                .map(|n| n.iso_a3.clone())
+                .collect();
+            let label = t
+                .terms
+                .extra_clauses
+                .first()
+                .cloned()
+                .unwrap_or_else(|| format!("{:?}", t.kind));
+            format!("{} [{}]", label, members.join(", "))
+        })
+        .collect();
+
     let mut out = String::new();
     out.push_str("WORLD SUMMARY:\n");
     if let Some(p) = player_nation {
         out.push_str(&format!(
-            "Player nation: {} ({}) id={}\n",
+            "Player nation: {} (iso={}) id={}\n",
             p.name, p.iso_a3, p.id
+        ));
+        // Player-specific extras
+        out.push_str(&format!(
+            "  treasury={}, gdp={}, manpower={}, doctrine={:?}\n",
+            p.treasury, p.gdp, p.manpower_pool, p.doctrine
         ));
     } else {
         out.push_str("Player nation: (unassigned)\n");
     }
     out.push_str(&format!(
-        "Round: {}, Date: {}\n",
+        "Round: {}, Date: {}\n\n",
         world.clock.round, world.clock.current_date
     ));
-    out.push_str("Top nations by industry:\n");
-    for line in top {
+
+    out.push_str("Top nations by industry (detail):\n");
+    for line in &top {
         out.push_str(" - ");
-        out.push_str(&line);
+        out.push_str(line);
         out.push('\n');
     }
+
+    out.push_str("\nALL NATIONS (iso=id|name) — use these IDs verbatim:\n");
+    // Chunk to avoid one massive line in the prompt rendering.
+    for chunk in directory.chunks(6) {
+        out.push_str("  ");
+        out.push_str(&chunk.join("  "));
+        out.push('\n');
+    }
+
+    if !treaty_lines.is_empty() {
+        out.push_str("\nACTIVE TREATIES / BLOCS:\n");
+        for t in &treaty_lines {
+            out.push_str(" - ");
+            out.push_str(t);
+            out.push('\n');
+        }
+    }
+
     out.push_str("\nPLAYER REQUEST:\n");
     out.push_str(player_text);
     out.push_str("\n\nRespond with one JSON object matching the schema.");
