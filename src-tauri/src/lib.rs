@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+mod config;
 mod error;
 mod providers;
+mod secrets;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
