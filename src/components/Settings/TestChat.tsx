@@ -6,7 +6,13 @@ import { Card } from "../shared/Card";
 import { Input } from "../shared/Input";
 import { Select } from "../shared/Select";
 
-export function TestChat({ refreshToken }: { refreshToken: number }) {
+export function TestChat({
+  refreshToken,
+  onChatComplete,
+}: {
+  refreshToken: number;
+  onChatComplete?: () => void;
+}) {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [providerId, setProviderId] = useState<string>("");
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -17,6 +23,7 @@ export function TestChat({ refreshToken }: { refreshToken: number }) {
   const [error, setError] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [autoUnload, setAutoUnload] = useState(false);
 
   useEffect(() => {
     listProviderConfigs().then((p) => {
@@ -62,8 +69,10 @@ export function TestChat({ refreshToken }: { refreshToken: number }) {
     setError(null);
     setResponse(null);
     try {
-      const resp = await testChat(providerId, model, prompt);
+      const keepAlive = autoUnload ? "0" : undefined;
+      const resp = await testChat(providerId, model, prompt, keepAlive);
       setResponse(resp.content);
+      onChatComplete?.();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -168,6 +177,24 @@ export function TestChat({ refreshToken }: { refreshToken: number }) {
                 {busy ? "Sending…" : "Send"}
               </Button>
             </div>
+
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: "0.85rem",
+                color: "#bbb",
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={autoUnload}
+                onChange={(e) => setAutoUnload(e.target.checked)}
+              />
+              Auto-unload model after each chat (frees VRAM immediately; next chat will re-load)
+            </label>
 
             {!model && !modelsLoading && !modelsError && providerId && (
               <div style={{ color: "#888", fontSize: "0.8rem" }}>

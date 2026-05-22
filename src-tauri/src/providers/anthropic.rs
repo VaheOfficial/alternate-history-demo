@@ -225,6 +225,7 @@ mod tests {
             max_tokens: Some(100),
             temperature: None,
             stream: false,
+            keep_alive: None,
         };
         let resp = p.chat(req).await.unwrap();
         assert_eq!(resp.content, "Hi!");

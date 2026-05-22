@@ -60,6 +60,8 @@ pub fn run() {
             commands::providers::detect_local_providers,
             commands::providers::get_default_provider,
             commands::providers::set_default_provider,
+            commands::providers::list_loaded_models,
+            commands::providers::unload_model,
             commands::saves::create_save_cmd,
             commands::saves::list_saves_cmd,
             commands::saves::delete_save_cmd,

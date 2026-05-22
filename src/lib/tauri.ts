@@ -4,6 +4,7 @@ import type {
   ModelInfo,
   ChatResponse,
   DetectedProvider,
+  LoadedModel,
 } from "./types";
 
 export function listProviderConfigs() {
@@ -35,12 +36,28 @@ export function listModels(provider_id: string) {
   return invoke<ModelInfo[]>("list_models", { providerId: provider_id });
 }
 
-export function testChat(provider_id: string, model: string, prompt: string) {
+export function testChat(
+  provider_id: string,
+  model: string,
+  prompt: string,
+  keep_alive?: string,
+) {
   return invoke<ChatResponse>("test_chat", {
     providerId: provider_id,
     model,
     prompt,
+    keepAlive: keep_alive ?? null,
   });
+}
+
+export function listLoadedModels(provider_id: string) {
+  return invoke<LoadedModel[] | null>("list_loaded_models", {
+    providerId: provider_id,
+  });
+}
+
+export function unloadModel(provider_id: string, model: string) {
+  return invoke<boolean>("unload_model", { providerId: provider_id, model });
 }
 
 export function detectLocalProviders() {

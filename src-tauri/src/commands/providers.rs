@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::error::{AppError, Result};
 use crate::providers::detect::{detect_local_providers as do_detect, DetectedProvider};
 use crate::providers::types::{
-    ChatMessage, ChatRequest, ChatResponse, ModelInfo, ProviderConfig, Role,
+    ChatMessage, ChatRequest, ChatResponse, LoadedModel, ModelInfo, ProviderConfig, Role,
 };
 use crate::secrets::keyring_store;
 use crate::AppState;
@@ -72,6 +72,7 @@ pub async fn test_chat(
     provider_id: Uuid,
     model: String,
     prompt: String,
+    keep_alive: Option<String>,
 ) -> Result<ChatResponse> {
     let p = state
         .registry
@@ -87,8 +88,36 @@ pub async fn test_chat(
         max_tokens: Some(512),
         temperature: Some(0.7),
         stream: false,
+        keep_alive,
     };
     Ok(p.chat(req).await?)
+}
+
+#[tauri::command]
+pub async fn list_loaded_models(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+) -> Result<Option<Vec<LoadedModel>>> {
+    let p = state
+        .registry
+        .get(provider_id)
+        .await
+        .ok_or_else(|| AppError::NotFound("provider".into()))?;
+    Ok(p.list_loaded_models().await?)
+}
+
+#[tauri::command]
+pub async fn unload_model(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+    model: String,
+) -> Result<bool> {
+    let p = state
+        .registry
+        .get(provider_id)
+        .await
+        .ok_or_else(|| AppError::NotFound("provider".into()))?;
+    Ok(p.unload_model(&model).await?)
 }
 
 #[tauri::command]

@@ -56,6 +56,8 @@ struct OllamaChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,6 +98,23 @@ struct OllamaStreamLine {
     message: Option<OllamaChatResponseMessage>,
     #[serde(default)]
     done: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaPsResponse {
+    #[serde(default)]
+    models: Vec<OllamaPsModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaPsModel {
+    name: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    size_vram: Option<u64>,
+    #[serde(default)]
+    expires_at: Option<String>,
 }
 
 fn role_str(role: &Role) -> &'static str {
@@ -160,6 +179,7 @@ impl Provider for OllamaProvider {
             } else {
                 None
             },
+            keep_alive: request.keep_alive.as_deref(),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -209,6 +229,7 @@ impl Provider for OllamaProvider {
             } else {
                 None
             },
+            keep_alive: request.keep_alive.as_deref(),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -251,6 +272,42 @@ impl Provider for OllamaProvider {
             Ok(resp) => Ok(resp.status().is_success()),
             Err(_) => Ok(false),
         }
+    }
+
+    async fn list_loaded_models(&self) -> Result<Option<Vec<LoadedModel>>> {
+        let resp: OllamaPsResponse = self.get_json("/api/ps").await?;
+        Ok(Some(
+            resp.models
+                .into_iter()
+                .map(|m| LoadedModel {
+                    model: m.name,
+                    size_bytes: m.size_vram.unwrap_or(m.size.unwrap_or(0)),
+                    expires_at: m.expires_at,
+                })
+                .collect(),
+        ))
+    }
+
+    async fn unload_model(&self, model: &str) -> Result<bool> {
+        // Per Ollama API: POST /api/chat with empty messages + keep_alive=0 unloads.
+        let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
+        let body = OllamaChatRequest {
+            model,
+            messages: Vec::new(),
+            stream: false,
+            options: None,
+            keep_alive: Some("0"),
+        };
+        let resp = self.client.post(&url).json(&body).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(true)
     }
 }
 
@@ -317,6 +374,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: false,
+            keep_alive: None,
         };
         let resp = provider.chat(req).await.expect("chat should succeed");
         assert_eq!(resp.content, "Hello, world!");
@@ -352,6 +410,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: true,
+            keep_alive: None,
         };
         let mut stream = provider.chat_stream(req).await.expect("stream should start");
         let mut combined = String::new();

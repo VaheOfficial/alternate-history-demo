@@ -395,6 +395,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: false,
+            keep_alive: None,
         };
         let resp = p.chat(req).await.unwrap();
         assert_eq!(resp.content, "Hi!");
@@ -428,6 +429,7 @@ mod tests {
             max_tokens: None,
             temperature: None,
             stream: true,
+            keep_alive: None,
         };
         let mut s = p.chat_stream(req).await.unwrap();
         let mut combined = String::new();

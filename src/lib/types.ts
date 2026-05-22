@@ -33,3 +33,9 @@ export interface DetectedProvider {
   base_url: string;
   probe_path: string;
 }
+
+export interface LoadedModel {
+  model: string;
+  size_bytes: number;
+  expires_at: string | null;
+}

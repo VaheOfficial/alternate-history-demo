@@ -51,6 +51,11 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub stream: bool,
+    /// Provider-specific keep-alive directive. Ollama: "5m", "0" (unload now),
+    /// "-1" (never unload), or duration string. Ignored by providers that
+    /// don't support the concept (cloud providers, etc.).
+    #[serde(default)]
+    pub keep_alive: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +85,16 @@ pub struct ModelInfo {
     pub id: String,
     pub display_name: Option<String>,
     pub context_length: Option<u32>,
+}
+
+/// A model currently held in VRAM/RAM by the provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadedModel {
+    pub model: String,
+    pub size_bytes: u64,
+    /// ISO-8601 timestamp at which the provider plans to unload this model.
+    /// `None` means "no expiry" (kept indefinitely) or "unknown".
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
