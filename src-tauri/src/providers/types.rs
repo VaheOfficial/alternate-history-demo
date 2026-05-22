@@ -1,0 +1,93 @@
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    Ollama,
+    OpenAiCompatible,
+    OpenAi,
+    Anthropic,
+    LmStudio,
+    LlamaCpp,
+    KoboldCpp,
+}
+
+impl ProviderKind {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ProviderKind::Ollama => "Ollama",
+            ProviderKind::OpenAiCompatible => "OpenAI-Compatible",
+            ProviderKind::OpenAi => "OpenAI",
+            ProviderKind::Anthropic => "Anthropic",
+            ProviderKind::LmStudio => "LM Studio",
+            ProviderKind::LlamaCpp => "llama.cpp",
+            ProviderKind::KoboldCpp => "KoboldCpp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: Role,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub stream: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatResponse {
+    pub content: String,
+    pub model: String,
+    pub usage: Option<UsageStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UsageStats {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatChunk {
+    /// Delta text for this chunk.
+    pub delta: String,
+    /// True on the final chunk.
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub context_length: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub id: Uuid,
+    pub kind: ProviderKind,
+    pub name: String,
+    pub base_url: String,
+    /// True when an API key is required and stored in keyring under this id.
+    pub uses_api_key: bool,
+}
