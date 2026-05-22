@@ -16,6 +16,9 @@ pub enum AppError {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    #[error("db: {0}")]
+    Db(String),
 }
 
 impl serde::Serialize for AppError {

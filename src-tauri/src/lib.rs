@@ -2,6 +2,7 @@
 
 mod commands;
 mod config;
+mod db;
 mod error;
 mod providers;
 mod secrets;
