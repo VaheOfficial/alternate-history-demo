@@ -9,10 +9,12 @@
 
 use serde::Serialize;
 
+use crate::engine::combat::resolve_movement;
 use crate::world::action::TypedAction;
 use crate::world::event::{Event, EventCategory, Visibility};
 use crate::world::ids::EventId;
 use crate::world::treaty::{Treaty, TreatyTerms};
+use crate::world::unit::{SupplyState, Unit};
 use crate::world::world::World;
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,16 +34,20 @@ pub struct ApplyFailure {
 /// per-action acceptance. A failure on action N does NOT prevent N+1 from
 /// being attempted — the validator is responsible for narrative consistency,
 /// the engine just enforces invariants.
+///
+/// `adjacency` is an optional lookup `geometry_ref -> list of neighbours`.
+/// Required for MoveUnit; without it, movement actions are rejected.
 pub fn apply_actions(
     mut world: World,
     actions: Vec<TypedAction>,
     narrative: Option<String>,
+    adjacency: Option<&std::collections::HashMap<String, Vec<String>>>,
 ) -> ApplyOutcome {
     let mut applied = Vec::new();
     let mut failures = Vec::new();
 
     for action in actions {
-        match apply_one(&mut world, &action) {
+        match apply_one(&mut world, &action, adjacency) {
             Ok(()) => applied.push(action),
             Err(reason) => failures.push(ApplyFailure { action, reason }),
         }
@@ -72,7 +78,11 @@ pub fn apply_actions(
     }
 }
 
-fn apply_one(world: &mut World, action: &TypedAction) -> Result<(), String> {
+fn apply_one(
+    world: &mut World,
+    action: &TypedAction,
+    adjacency: Option<&std::collections::HashMap<String, Vec<String>>>,
+) -> Result<(), String> {
     match action {
         TypedAction::ModifyRelation {
             from,
@@ -204,9 +214,41 @@ fn apply_one(world: &mut World, action: &TypedAction) -> Result<(), String> {
             });
             Ok(())
         }
-        TypedAction::SpawnUnit { .. } | TypedAction::MoveUnit { .. } => {
-            // Stubs — wired up in Plan 05 along with combat.
-            Err("unit actions not yet implemented".into())
+        TypedAction::SpawnUnit {
+            owner,
+            unit_type,
+            location,
+            strength,
+        } => {
+            if !world.nations.iter().any(|n| n.id == *owner) {
+                return Err(format!("spawn: owner {} not found", owner));
+            }
+            if !world.provinces.iter().any(|p| p.id == *location) {
+                return Err(format!("spawn: province {} not found", location));
+            }
+            world.units.push(Unit {
+                id: crate::world::ids::UnitId::new(),
+                owner: *owner,
+                unit_type: *unit_type,
+                location: *location,
+                strength: (*strength).clamp(1, 1000),
+                organization: 80,
+                experience: 0,
+                supply_state: SupplyState::Supplied,
+            });
+            Ok(())
+        }
+        TypedAction::MoveUnit { unit, target } => {
+            let adj = adjacency
+                .ok_or_else(|| "move: adjacency map not provided".to_string())?;
+            let lookup = |s: &str| -> Vec<String> {
+                adj.get(s).cloned().unwrap_or_default()
+            };
+            let outcome = resolve_movement(world, *unit, *target, &lookup);
+            match outcome {
+                crate::engine::combat::MovementOutcome::Invalid { reason } => Err(reason),
+                _ => Ok(()),
+            }
         }
         TypedAction::AssassinateNpc { target } => {
             let before = world.npcs.len();
@@ -271,6 +313,7 @@ mod tests {
                 delta: 999,
             }],
             None,
+            None,
         );
         assert_eq!(out.applied.len(), 1);
         assert_eq!(
@@ -293,6 +336,7 @@ mod tests {
                 delta: -200,
                 reason: "test".into(),
             }],
+            None,
             None,
         );
         assert_eq!(out.applied.len(), 1);
@@ -321,6 +365,7 @@ mod tests {
                 delta: 5,
             }],
             None,
+            None,
         );
         assert_eq!(out.applied.len(), 0);
         assert_eq!(out.failures.len(), 1);
@@ -338,6 +383,7 @@ mod tests {
                 delta: 5,
             }],
             Some("Test narrative.".into()),
+            None,
         );
         assert_eq!(out.world.events.len(), before + 1);
         let last = out.world.events.last().unwrap();

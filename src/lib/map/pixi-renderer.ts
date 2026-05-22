@@ -61,6 +61,8 @@ export interface SceneHandles {
   cityContainer: Container;
   /** Sibling container on the stage — country labels (above provinces, below cities). */
   countryLabelContainer: Container;
+  /** Sibling container on the stage — unit icons (above cities). */
+  unitContainer: Container;
   destroy(): void;
 }
 
@@ -110,6 +112,11 @@ export async function createPixiScene(
   cityContainer.eventMode = "none";
   app.stage.addChild(cityContainer);
 
+  // Units sit ABOVE cities so they're always visible.
+  const unitContainer = new Container();
+  unitContainer.eventMode = "none";
+  app.stage.addChild(unitContainer);
+
   return {
     app,
     mapContainer,
@@ -119,6 +126,7 @@ export async function createPixiScene(
     highlightContainer,
     cityContainer,
     countryLabelContainer,
+    unitContainer,
     destroy() {
       try {
         app.destroy({ removeView: true }, { children: true, texture: true });
@@ -1001,6 +1009,130 @@ export function updateCountryLabels(
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
+}
+
+// ─── Unit icons ────────────────────────────────────────────────────────────
+
+export interface UnitLayer {
+  container: Container;
+  /** One stack per province (group of co-located units, possibly mixed owners). */
+  graphics: Graphics;
+  texts: Text[];
+}
+
+export interface UnitLayerStack {
+  /** World-space pixel coords (zoom 1, pre-pan). */
+  worldX: number;
+  worldY: number;
+  ownerColor: number;
+  ownerAlt: number;
+  count: number;
+}
+
+export function createUnitLayer(container: Container): UnitLayer {
+  const g = new Graphics();
+  container.addChild(g);
+  return { container, graphics: g, texts: [] };
+}
+
+/**
+ * Rebuild the unit-icon layer. `stacksByProvince` maps geometry_ref → stack
+ * data. Each stack is one circle at the province centroid with a count
+ * badge if >1 unit; mixed-owner stacks get an inner ring of the second owner.
+ */
+export function buildUnits(
+  layer: UnitLayer,
+  width: number,
+  height: number,
+  stacks: Array<{
+    /** Geographic anchor [lon, lat] of the province. */
+    lon: number;
+    lat: number;
+    ownerColor: string;
+    altOwnerColor?: string;
+    count: number;
+  }>,
+): void {
+  for (const t of layer.texts) {
+    layer.container.removeChild(t);
+    t.destroy();
+  }
+  layer.texts = [];
+  layer.graphics.clear();
+  // Cache the stack data on the layer for per-view redraw.
+  (layer as any)._stacks = stacks.map((s) => {
+    const projection = geoEquirectangular()
+      .scale(width / (2 * Math.PI))
+      .translate([width / 2, height / 2])
+      .rotate([0, 0])
+      .center([0, 0]);
+    const projected = projection([s.lon, s.lat]) ?? [0, 0];
+    return {
+      worldX: projected[0],
+      worldY: projected[1],
+      ownerColor: hexToInt(s.ownerColor).rgb,
+      altColor: s.altOwnerColor ? hexToInt(s.altOwnerColor).rgb : null,
+      count: s.count,
+    };
+  });
+  (layer as any)._width = width;
+  (layer as any)._height = height;
+}
+
+export function updateUnits(
+  layer: UnitLayer,
+  view: { panX: number; panY: number; zoom: number },
+  canvas: { w: number; h: number },
+): void {
+  const stacks = (layer as any)._stacks as
+    | Array<{
+        worldX: number;
+        worldY: number;
+        ownerColor: number;
+        altColor: number | null;
+        count: number;
+      }>
+    | undefined;
+  layer.graphics.clear();
+  for (const t of layer.texts) {
+    layer.container.removeChild(t);
+    t.destroy();
+  }
+  layer.texts = [];
+  if (!stacks) return;
+
+  for (const s of stacks) {
+    const sx = s.worldX * view.zoom + view.panX;
+    const sy = s.worldY * view.zoom + view.panY;
+    if (sx < -40 || sx > canvas.w + 40 || sy < -40 || sy > canvas.h + 40) continue;
+
+    layer.graphics.circle(sx, sy, 8);
+    layer.graphics.fill({ color: s.ownerColor, alpha: 1 });
+    layer.graphics.stroke({ width: 1.5, color: 0x0a0a0a, alpha: 0.95 });
+
+    if (s.altColor !== null) {
+      layer.graphics.circle(sx, sy, 4);
+      layer.graphics.fill({ color: s.altColor, alpha: 1 });
+    }
+
+    if (s.count > 1) {
+      const t = new Text({
+        text: String(s.count),
+        style: new TextStyle({
+          fontFamily: '"Inter Variable", "Inter", sans-serif',
+          fontSize: 10,
+          fontWeight: "700",
+          fill: 0xffffff,
+          stroke: { color: 0x0a0a0a, width: 2 },
+        }),
+      });
+      t.anchor.set(0, 0.5);
+      t.x = sx + 10;
+      t.y = sy;
+      layer.container.addChild(t);
+      layer.texts.push(t);
+    }
+  }
 }
 
 export { worldExtentAtBase };

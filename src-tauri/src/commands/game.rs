@@ -5,9 +5,11 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::engine::{
-    advance_clock, apply_actions, run_economy_tick, run_npc_turn, ApplyOutcome,
-    NpcTurnResult,
+    advance_clock, apply_actions, apply_production, resolve_movement, run_economy_tick,
+    run_npc_turn, ApplyOutcome, MovementOutcome, NpcTurnResult, ProductionOutcome,
+    ProductionRequest,
 };
+use crate::world::ids::{ProvinceId, UnitId};
 use crate::error::{AppError, Result};
 use crate::providers::types::{ChatMessage, ChatRequest, Role};
 use crate::saves::snapshot::save_snapshot;
@@ -23,6 +25,182 @@ pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     run_economy_tick(&mut advanced, days.max(1));
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
+}
+
+// ─── Combat MVP ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ProductionResult {
+    pub accepted: bool,
+    pub narrative: String,
+    pub plan: Vec<ProductionRequest>,
+    pub outcome: ProductionOutcome,
+    pub world: World,
+    pub raw_response: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductionEnvelope {
+    #[serde(default)]
+    accepted: Option<bool>,
+    #[serde(default)]
+    narrative: Option<String>,
+    #[serde(default)]
+    units: Option<Vec<ProductionRequest>>,
+}
+
+/// LLM-mediated unit production. Player describes desired build; LLM looks
+/// at nation industry / treasury / manpower and emits a plan the engine
+/// applies. Capacity caps are enforced server-side regardless of what the
+/// LLM says (defensive — LLM can't overspend the budget).
+#[tauri::command]
+pub async fn request_production_cmd(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+    model: String,
+    world: World,
+    player_text: String,
+) -> Result<ProductionResult> {
+    let provider = state
+        .registry
+        .get(provider_id)
+        .await
+        .ok_or_else(|| AppError::NotFound("provider".into()))?;
+
+    let nation_id = world
+        .player_nation
+        .ok_or_else(|| AppError::InvalidArgument("no player nation".into()))?;
+    let nation = world
+        .nations
+        .iter()
+        .find(|n| n.id == nation_id)
+        .ok_or_else(|| AppError::NotFound("player nation".into()))?
+        .clone();
+
+    let system = format!(
+        "You are the strategic planning bureau of {} (iso={}). The player just \
+         told you what they want built. Decide what is REALISTICALLY producible \
+         this turn given the constraints below.\n\n\
+         CAPACITY:\n\
+         - Industry capacity: {} points/turn\n\
+         - Treasury: ${} M\n\
+         - Manpower pool: {}\n\n\
+         COSTS PER UNIT (industry, treasury USD, manpower):\n\
+         - infantry: 1 IC, $80M, 8,000\n\
+         - mechanized: 2 IC, $220M, 6,500\n\
+         - armor: 4 IC, $600M, 5,000\n\
+         - artillery: 2 IC, $180M, 4,500\n\n\
+         Respond with ONE JSON object only matching this schema. Engine will \
+         enforce caps anyway, but try to be honest.\n\
+         {{\n\
+           \"accepted\": true | false,\n\
+           \"narrative\": \"1-2 paragraph in-character description of the build\",\n\
+           \"units\": [\n\
+             {{\"unit_type\": \"infantry|mechanized|armor|artillery\", \"count\": <int>, \"location_province\": null}}\n\
+           ]\n\
+         }}",
+        nation.name,
+        nation.iso_a3,
+        nation.industry_capacity,
+        nation.treasury / 1_000_000,
+        nation.manpower_pool
+    );
+
+    let req = ChatRequest {
+        model,
+        messages: vec![
+            ChatMessage {
+                role: Role::System,
+                content: system,
+            },
+            ChatMessage {
+                role: Role::User,
+                content: player_text,
+            },
+        ],
+        max_tokens: Some(1024),
+        temperature: Some(0.4),
+        stream: false,
+        keep_alive: None,
+    };
+    let resp = provider.chat(req).await?;
+    let raw = resp.content;
+
+    let env = parse_production_envelope(&raw).unwrap_or(ProductionEnvelope {
+        accepted: Some(false),
+        narrative: Some(format!(
+            "(unparseable LLM response): {}",
+            raw.chars().take(500).collect::<String>()
+        )),
+        units: None,
+    });
+
+    let accepted = env.accepted.unwrap_or(false);
+    let narrative = env.narrative.unwrap_or_default();
+    let plan = env.units.unwrap_or_default();
+
+    if !accepted || plan.is_empty() {
+        return Ok(ProductionResult {
+            accepted: false,
+            narrative,
+            plan,
+            outcome: ProductionOutcome {
+                spawned: Vec::new(),
+                denied: Vec::new(),
+                industry_used: 0,
+                treasury_spent: 0,
+                manpower_spent: 0,
+            },
+            world,
+            raw_response: raw,
+        });
+    }
+
+    let mut mutable_world = world;
+    let outcome = apply_production(&mut mutable_world, nation_id, plan.clone());
+    let _ = save_snapshot(mutable_world.clone()).await;
+
+    Ok(ProductionResult {
+        accepted: true,
+        narrative,
+        plan,
+        outcome,
+        world: mutable_world,
+        raw_response: raw,
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MoveUnitRequest {
+    pub unit: UnitId,
+    pub target: ProvinceId,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MoveUnitResult {
+    pub outcome: MovementOutcome,
+    pub world: World,
+}
+
+/// Engine-only move command (no LLM in the loop). Takes a unit + target
+/// province + adjacency map (sent from the frontend so the engine can stay
+/// stateless wrt asset files). Combat resolves automatically when the
+/// destination contains hostile units.
+#[tauri::command]
+pub async fn move_unit_cmd(
+    world: World,
+    request: MoveUnitRequest,
+    adjacency: std::collections::HashMap<String, Vec<String>>,
+) -> Result<MoveUnitResult> {
+    let mut mutable = world;
+    let lookup =
+        |s: &str| -> Vec<String> { adjacency.get(s).cloned().unwrap_or_default() };
+    let outcome = resolve_movement(&mut mutable, request.unit, request.target, &lookup);
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(MoveUnitResult {
+        outcome,
+        world: mutable,
+    })
 }
 
 /// Run the NPC turn — the LLM picks 3–6 relevant nations to act, then each
@@ -87,6 +265,7 @@ pub async fn validate_action_cmd(
     model: String,
     world: World,
     player_text: String,
+    adjacency: Option<std::collections::HashMap<String, Vec<String>>>,
 ) -> Result<ValidatorResult> {
     let provider = state
         .registry
@@ -149,7 +328,7 @@ pub async fn validate_action_cmd(
         world: new_world,
         applied,
         failures,
-    } = apply_actions(world, actions, Some(narrative.clone()));
+    } = apply_actions(world, actions, Some(narrative.clone()), adjacency.as_ref());
 
     // Persist a snapshot at the current round so it can be reloaded later.
     let _ = save_snapshot(new_world.clone()).await;
@@ -335,6 +514,12 @@ fn parse_envelope(raw: &str) -> Option<LlmEnvelope> {
     let cleaned = strip_code_fences(raw);
     let block = find_json_block(&cleaned)?;
     serde_json::from_str::<LlmEnvelope>(block).ok()
+}
+
+fn parse_production_envelope(raw: &str) -> Option<ProductionEnvelope> {
+    let cleaned = strip_code_fences(raw);
+    let block = find_json_block(&cleaned)?;
+    serde_json::from_str::<ProductionEnvelope>(block).ok()
 }
 
 fn strip_code_fences(s: &str) -> String {

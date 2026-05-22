@@ -64,7 +64,7 @@ pub async fn run_npc_turn(
                     world: new_world,
                     applied,
                     failures,
-                } = apply_actions(world.clone(), actions, narrative);
+                } = apply_actions(world.clone(), actions, narrative, None);
                 world = new_world;
 
                 // Persist goal updates if provided.

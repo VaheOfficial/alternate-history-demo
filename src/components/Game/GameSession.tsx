@@ -16,9 +16,12 @@ import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
 import { TurnControls } from "./TurnControls";
 import { ActionPanel } from "./ActionPanel";
+import { ProductionPanel } from "./ProductionPanel";
 import { SavesDrawer } from "./SavesDrawer";
 import { TurnSummaryModal, type EconomyDelta } from "./TurnSummaryModal";
 import { colorForMapcolor } from "../../lib/map/renderer";
+import { geoCentroid } from "d3-geo";
+import { useMapData } from "../Map/useMapData";
 
 export function GameSession({
   world: initialWorld,
@@ -189,6 +192,86 @@ export function GameSession({
     return m;
   }, [world.nations]);
 
+  // Province → geo-centroid lookup, computed lazily from the topojson.
+  const mapData = useMapData();
+  const provinceCentroids = useMemo(() => {
+    const m = new Map<string, [number, number]>();
+    if (mapData.status !== "ready") return m;
+    for (const f of mapData.data.features) {
+      const sid = String((f.properties as { shape_id?: string }).shape_id ?? "");
+      if (!sid) continue;
+      try {
+        const c = geoCentroid(f);
+        m.set(sid, c as [number, number]);
+      } catch {
+        // skip
+      }
+    }
+    return m;
+  }, [mapData]);
+
+  // Pack units into per-province stacks for the map layer.
+  const unitStacks = useMemo(() => {
+    if (!world.units || world.units.length === 0) return [];
+    const byProvince = new Map<
+      string,
+      {
+        province_id: string;
+        ownerColor: string;
+        altOwnerColor?: string;
+        count: number;
+        owners: Set<string>;
+      }
+    >();
+    for (const u of world.units) {
+      const province = world.provinces.find((p) => p.id === u.location);
+      if (!province) continue;
+      const owner = world.nations.find((n) => n.id === u.owner);
+      if (!owner) continue;
+      const key = province.geometry_ref;
+      let bucket = byProvince.get(key);
+      if (!bucket) {
+        bucket = {
+          province_id: province.id,
+          ownerColor: colorForMapcolor(owner.map_color),
+          count: 0,
+          owners: new Set(),
+        };
+        byProvince.set(key, bucket);
+      }
+      bucket.count += 1;
+      bucket.owners.add(u.owner);
+      if (bucket.owners.size > 1 && !bucket.altOwnerColor) {
+        // Second owner present → record alt color for the inner dot.
+        const otherOwner = world.nations.find(
+          (n) => n.id !== owner.id && bucket!.owners.has(n.id),
+        );
+        if (otherOwner) {
+          bucket.altOwnerColor = colorForMapcolor(otherOwner.map_color);
+        }
+      }
+    }
+    const stacks: Array<{
+      lon: number;
+      lat: number;
+      ownerColor: string;
+      altOwnerColor?: string;
+      count: number;
+    }> = [];
+    for (const [shapeRef, bucket] of byProvince) {
+      const centroid = provinceCentroids.get(shapeRef);
+      if (!centroid) continue;
+      stacks.push({
+        lon: centroid[0],
+        lat: centroid[1],
+        ownerColor: bucket.ownerColor,
+        altOwnerColor: bucket.altOwnerColor,
+        count: bucket.count,
+      });
+    }
+    return stacks;
+  }, [world.units, world.provinces, world.nations, provinceCentroids]);
+
   return (
     <div style={containerStyle}>
       <TopBar
@@ -214,6 +297,7 @@ export function GameSession({
           selectedIso={selectedIso}
           onProvinceHover={setHover}
           onProvinceClick={handleClick}
+          unitStacks={unitStacks}
         />
         {hover && hoveredProvince && (
           <ProvinceTooltip
@@ -231,6 +315,15 @@ export function GameSession({
           onProviderChange={setProviderId}
           onModelChange={setModel}
           onResult={handleValidatorResult}
+        />
+        <ProductionPanel
+          world={world}
+          providerId={providerId}
+          model={model}
+          noProvider={providers.length === 0}
+          onResult={(r) => {
+            if (r.accepted) setWorld(r.world);
+          }}
         />
         {selectedNation && (
           <CountryDrawer

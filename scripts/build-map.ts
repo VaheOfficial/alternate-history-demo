@@ -4,6 +4,7 @@ import { downloadCached } from "./lib/download.ts";
 import { simplifyToTopoJson } from "./lib/simplify.ts";
 import { clusterProvinces } from "./lib/cluster-provinces.ts";
 import { buildCountryOutlines } from "./lib/country-outlines.ts";
+import { buildAdjacency } from "./lib/adjacency.ts";
 import { extractMeta } from "./lib/extract-meta.ts";
 import { extractCities } from "./lib/extract-cities.ts";
 import { extractCountries } from "./lib/extract-countries.ts";
@@ -90,6 +91,14 @@ async function main() {
   console.log(
     `[build-map] country-outlines.geojson written (${outlines.countries} countries, ${(outlines.bytes / 1024).toFixed(1)} KB)`,
   );
+
+  // Province adjacency graph — segment-shared neighbours. Used for combat
+  // movement validation.
+  const adj = await buildAdjacency(
+    dissolvedGeoPath,
+    `${PUBLIC_DIR}/province-adjacency.json`,
+  );
+  console.log(`[build-map] province-adjacency.json written (${adj.pairs} edges)`);
 
   // --- Country polygons (names + label anchors) ---
   const countriesRawPath = `${CACHE_DIR}/ne_10m_admin_0_countries.geojson`;

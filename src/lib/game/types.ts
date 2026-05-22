@@ -16,6 +16,21 @@ export type DoctrineId =
   | "mass_assault"
   | "superior_firepower";
 
+export type UnitType = "infantry" | "armor" | "mechanized" | "artillery";
+
+export type SupplyState = "supplied" | "reduced" | "out_of_supply";
+
+export interface Unit {
+  id: string;
+  owner: string;
+  unit_type: UnitType;
+  location: string;
+  strength: number;
+  organization: number;
+  experience: number;
+  supply_state: SupplyState;
+}
+
 export type Terrain =
   | "plains"
   | "forest"
@@ -120,7 +135,7 @@ export interface World {
   player_nation: string | null;
   nations: Nation[];
   provinces: Province[];
-  units: unknown[];
+  units: Unit[];
   npcs: unknown[];
   treaties: Treaty[];
   crises: unknown[];

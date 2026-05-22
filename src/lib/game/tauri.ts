@@ -51,12 +51,14 @@ export function validateAction(
   model: string,
   world: World,
   playerText: string,
+  adjacency?: Record<string, string[]>,
 ) {
   return invoke<ValidatorResult>("validate_action_cmd", {
     providerId,
     model,
     world,
     playerText,
+    adjacency: adjacency ?? null,
   });
 }
 
@@ -94,5 +96,75 @@ export function runNpcTurn(
     world,
     days,
     maxActors: maxActors ?? null,
+  });
+}
+
+export interface ProductionRequestInput {
+  unit_type: "infantry" | "armor" | "mechanized" | "artillery";
+  count: number;
+  location_province?: string | null;
+}
+
+export interface ProductionDenied {
+  unit_type: string;
+  requested: number;
+  granted: number;
+  reason: string;
+}
+
+export interface ProductionOutcome {
+  spawned: string[];
+  denied: ProductionDenied[];
+  industry_used: number;
+  treasury_spent: number;
+  manpower_spent: number;
+}
+
+export interface ProductionResult {
+  accepted: boolean;
+  narrative: string;
+  plan: ProductionRequestInput[];
+  outcome: ProductionOutcome;
+  world: World;
+  raw_response: string;
+}
+
+export function requestProduction(
+  providerId: string,
+  model: string,
+  world: World,
+  playerText: string,
+) {
+  return invoke<ProductionResult>("request_production_cmd", {
+    providerId,
+    model,
+    world,
+    playerText,
+  });
+}
+
+export type MovementOutcome =
+  | { outcome: "moved" }
+  | { outcome: "battle_won_conquered"; defender_losses_pct: number; attacker_losses_pct: number; new_owner: string; previous_owner: string }
+  | { outcome: "battle_won"; defender_losses_pct: number; attacker_losses_pct: number }
+  | { outcome: "stalemate"; both_losses_pct: number }
+  | { outcome: "battle_lost"; attacker_losses_pct: number; defender_losses_pct: number }
+  | { outcome: "invalid"; reason: string };
+
+export interface MoveUnitResult {
+  outcome: MovementOutcome;
+  world: World;
+}
+
+export function moveUnit(
+  world: World,
+  unit: string,
+  target: string,
+  adjacency: Record<string, string[]>,
+) {
+  return invoke<MoveUnitResult>("move_unit_cmd", {
+    world,
+    request: { unit, target },
+    adjacency,
   });
 }

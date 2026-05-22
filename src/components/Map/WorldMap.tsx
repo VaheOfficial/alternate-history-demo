@@ -7,24 +7,28 @@ import {
   buildCountryHighlight,
   buildCountryLabels,
   buildPolygons,
+  buildUnits,
   clampView,
   createCityLayer,
   createCountryLabelLayer,
   createHighlightLayer,
   createPixiScene,
   createTileSet,
+  createUnitLayer,
   resetTiles,
   resizeRenderer,
   updateCities,
   updateCountryHighlight,
   updateCountryLabels,
   updateTiles,
+  updateUnits,
   worldExtentAtBase,
   type CityLayer,
   type CountryLabelLayer,
   type HighlightLayer,
   type SceneHandles,
   type TileSet,
+  type UnitLayer,
 } from "../../lib/map/pixi-renderer";
 import { loadCities, type City } from "../../lib/map/cities";
 import { loadCountries, type Country } from "../../lib/map/countries";
@@ -73,6 +77,7 @@ export function WorldMap({
   selectedIso,
   onProvinceHover,
   onProvinceClick,
+  unitStacks,
 }: {
   ownershipColors?: Map<string, string>;
   /** ISO3 of the player's nation — outlined permanently. */
@@ -81,6 +86,14 @@ export function WorldMap({
   selectedIso?: string | null;
   onProvinceHover?: (info: ProvinceHoverInfo | null) => void;
   onProvinceClick?: (shape_id: string) => void;
+  /** Per-province unit stack data — drawn as small circles with count badges. */
+  unitStacks?: Array<{
+    lon: number;
+    lat: number;
+    ownerColor: string;
+    altOwnerColor?: string;
+    count: number;
+  }>;
 }) {
   const state = useMapData();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -90,6 +103,7 @@ export function WorldMap({
   const cityLayerRef = useRef<CityLayer | null>(null);
   const countryLayerRef = useRef<CountryLabelLayer | null>(null);
   const highlightLayerRef = useRef<HighlightLayer | null>(null);
+  const unitLayerRef = useRef<UnitLayer | null>(null);
   const indexRef = useRef<ProvinceIndex | null>(null);
 
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
@@ -164,6 +178,7 @@ export function WorldMap({
       cityLayerRef.current = createCityLayer(scene.cityContainer);
       countryLayerRef.current = createCountryLabelLayer(scene.countryLabelContainer);
       highlightLayerRef.current = createHighlightLayer(scene.highlightContainer);
+      unitLayerRef.current = createUnitLayer(scene.unitContainer);
       setReady(true);
     })();
 
@@ -175,6 +190,7 @@ export function WorldMap({
       cityLayerRef.current = null;
       countryLayerRef.current = null;
       highlightLayerRef.current = null;
+      unitLayerRef.current = null;
       indexRef.current = null;
       setReady(false);
     };
@@ -188,7 +204,8 @@ export function WorldMap({
     const cityLayer = cityLayerRef.current;
     const countryLayer = countryLayerRef.current;
     const highlightLayer = highlightLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !ready) return;
+    const unitLayer = unitLayerRef.current;
+    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !unitLayer || !ready) return;
     if (state.status !== "ready") return;
 
     resizeRenderer(scene.app, size.w, size.h);
@@ -249,12 +266,19 @@ export function WorldMap({
     if (clamped.panX !== view.panX || clamped.panY !== view.panY) {
       setView(clamped);
     }
+    if (unitStacks && unitStacks.length > 0) {
+      buildUnits(unitLayer, size.w, size.h, unitStacks);
+    } else {
+      buildUnits(unitLayer, size.w, size.h, []);
+    }
+
     applyView(scene.mapContainer, applyV);
     updateTiles(tiles, applyV, { w: size.w, h: size.h });
     updateCities(cityLayer, applyV, { w: size.w, h: size.h });
     updateCountryLabels(countryLayer, applyV, { w: size.w, h: size.h });
     updateCountryHighlight(highlightLayer, applyV);
-  }, [ready, state, size, effectiveFill, cities, countries, outlines, playerIso, selectedIso]);
+    updateUnits(unitLayer, applyV, { w: size.w, h: size.h });
+  }, [ready, state, size, effectiveFill, cities, countries, outlines, playerIso, selectedIso, unitStacks]);
 
   // Per-view update: apply transform + sync tile / city / country / highlight.
   useEffect(() => {
@@ -263,12 +287,14 @@ export function WorldMap({
     const cityLayer = cityLayerRef.current;
     const countryLayer = countryLayerRef.current;
     const highlightLayer = highlightLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !ready) return;
+    const unitLayer = unitLayerRef.current;
+    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !unitLayer || !ready) return;
     applyView(scene.mapContainer, view);
     updateTiles(tiles, view, { w: size.w, h: size.h });
     updateCities(cityLayer, view, { w: size.w, h: size.h });
     updateCountryLabels(countryLayer, view, { w: size.w, h: size.h });
     updateCountryHighlight(highlightLayer, view);
+    updateUnits(unitLayer, view, { w: size.w, h: size.h });
   }, [view, ready, size.w, size.h]);
 
   // Drag (pan) — also tracks recent drag distance so a click that follows a
