@@ -4,29 +4,31 @@ import { buildCountryFillMap } from "../../lib/map/renderer";
 import {
   applyView,
   buildCities,
+  buildCountryLabels,
   buildPolygons,
   clampView,
   createCityLayer,
+  createCountryLabelLayer,
   createPixiScene,
   createTileSet,
   resetTiles,
   resizeRenderer,
   updateCities,
+  updateCountryLabels,
   updateTiles,
   worldExtentAtBase,
   type CityLayer,
+  type CountryLabelLayer,
   type SceneHandles,
   type TileSet,
 } from "../../lib/map/pixi-renderer";
 import { loadCities, type City } from "../../lib/map/cities";
+import { loadCountries, type Country } from "../../lib/map/countries";
+import { buildProvinceIndex, pickProvince, type ProvinceIndex } from "../../lib/map/hit-test";
 
 const COLORS = {
   background: 0x040810,
   neutralLand: "#3a5e3a",
-  // Dark warm slate — softer than pure black over the satellite imagery.
-  // Double-draw (each border belongs to two polygons) plus WebGL's tendency
-  // to over-cover thin lines means the effective opacity is higher than the
-  // alpha here suggests; a non-black base color keeps it readable.
   border: "#2a2218",
   borderAlpha: 0.5,
 };
@@ -50,10 +52,21 @@ function clampToWorld(
   return clampView(v, { w: canvasSize.w, h: canvasSize.h }, ext);
 }
 
+export interface ProvinceHoverInfo {
+  shape_id: string;
+  /** Mouse position in viewport pixels, for tooltip placement. */
+  clientX: number;
+  clientY: number;
+}
+
 export function WorldMap({
   ownershipColors,
+  onProvinceHover,
+  onProvinceClick,
 }: {
   ownershipColors?: Map<string, string>;
+  onProvinceHover?: (info: ProvinceHoverInfo | null) => void;
+  onProvinceClick?: (shape_id: string) => void;
 }) {
   const state = useMapData();
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -61,20 +74,27 @@ export function WorldMap({
   const sceneRef = useRef<SceneHandles | null>(null);
   const tilesRef = useRef<TileSet | null>(null);
   const cityLayerRef = useRef<CityLayer | null>(null);
+  const countryLayerRef = useRef<CountryLabelLayer | null>(null);
+  const indexRef = useRef<ProvinceIndex | null>(null);
 
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
   const [view, setView] = useState<ViewState>(INITIAL_VIEW);
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [ready, setReady] = useState(false);
   const [cities, setCities] = useState<City[] | null>(null);
+  const [countries, setCountries] = useState<Country[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    loadCities()
-      .then((c) => {
-        if (!cancelled) setCities(c);
+    Promise.all([loadCities(), loadCountries()])
+      .then(([c, cs]) => {
+        if (cancelled) return;
+        setCities(c);
+        setCountries(cs);
       })
       .catch(() => {
-        // fall through with no cities
+        // fall through with no labels
       });
     return () => {
       cancelled = true;
@@ -125,6 +145,7 @@ export function WorldMap({
         BG_DARKEN,
       );
       cityLayerRef.current = createCityLayer(scene.cityContainer);
+      countryLayerRef.current = createCountryLabelLayer(scene.countryLabelContainer);
       setReady(true);
     })();
 
@@ -134,17 +155,20 @@ export function WorldMap({
       sceneRef.current = null;
       tilesRef.current = null;
       cityLayerRef.current = null;
+      countryLayerRef.current = null;
+      indexRef.current = null;
       setReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Rebuild polygons + cities + reset tile set on size/data/fill changes.
+  // Rebuild polygons + labels + reset tile set on size/data/fill changes.
   useEffect(() => {
     const scene = sceneRef.current;
     const tiles = tilesRef.current;
     const cityLayer = cityLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !ready) return;
+    const countryLayer = countryLayerRef.current;
+    if (!scene || !tiles || !cityLayer || !countryLayer || !ready) return;
     if (state.status !== "ready") return;
 
     resizeRenderer(scene.app, size.w, size.h);
@@ -161,9 +185,9 @@ export function WorldMap({
       fillAlpha: 0.42,
     });
 
-    if (cities) {
-      buildCities(cityLayer, cities, size.w, size.h);
-    }
+    if (cities) buildCities(cityLayer, cities, size.w, size.h);
+    if (countries) buildCountryLabels(countryLayer, countries, size.w, size.h);
+    indexRef.current = buildProvinceIndex(state.data.features, size.w, size.h);
 
     resetTiles(tiles, worldExtentAtBase(size.w, size.h));
     const clamped = clampToWorld(view, size);
@@ -174,25 +198,30 @@ export function WorldMap({
     applyView(scene.mapContainer, applyV);
     updateTiles(tiles, applyV, { w: size.w, h: size.h });
     updateCities(cityLayer, applyV, { w: size.w, h: size.h });
-  }, [ready, state, size, effectiveFill, cities]);
+    updateCountryLabels(countryLayer, applyV, { w: size.w, h: size.h });
+  }, [ready, state, size, effectiveFill, cities, countries]);
 
-  // Per-view update: apply transform + sync tile visibility + reposition cities.
+  // Per-view update: apply transform + sync tile / city / country visibility.
   useEffect(() => {
     const scene = sceneRef.current;
     const tiles = tilesRef.current;
     const cityLayer = cityLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !ready) return;
+    const countryLayer = countryLayerRef.current;
+    if (!scene || !tiles || !cityLayer || !countryLayer || !ready) return;
     applyView(scene.mapContainer, view);
     updateTiles(tiles, view, { w: size.w, h: size.h });
     updateCities(cityLayer, view, { w: size.w, h: size.h });
+    updateCountryLabels(countryLayer, view, { w: size.w, h: size.h });
   }, [view, ready, size.w, size.h]);
 
-  // Drag (pan).
+  // Drag (pan) — also tracks recent drag distance so a click that follows a
+  // tiny mouse-down/move/up doesn't get suppressed as a drag.
   const dragRef = useRef<{
     x: number;
     y: number;
     panX: number;
     panY: number;
+    moved: number;
   } | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -202,24 +231,64 @@ export function WorldMap({
       y: e.clientY,
       panX: view.panX,
       panY: view.panY,
+      moved: 0,
     };
     setDragging(true);
   };
+
   const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag) return;
-    const dx = e.clientX - drag.x;
-    const dy = e.clientY - drag.y;
-    setView((v) =>
-      clampToWorld(
-        { ...v, panX: drag.panX + dx, panY: drag.panY + dy },
-        size,
-      ),
-    );
+    const c = hostRef.current;
+    if (drag) {
+      const dx = e.clientX - drag.x;
+      const dy = e.clientY - drag.y;
+      drag.moved = Math.max(drag.moved, Math.abs(dx) + Math.abs(dy));
+      setView((v) =>
+        clampToWorld({ ...v, panX: drag.panX + dx, panY: drag.panY + dy }, size),
+      );
+      return;
+    }
+
+    // Hover hit-test: only when not dragging, and only if the parent cares.
+    if (!c || !onProvinceHover) return;
+    const idx = indexRef.current;
+    if (!idx) return;
+    const rect = c.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const wx = (sx - viewRef.current.panX) / viewRef.current.zoom;
+    const wy = (sy - viewRef.current.panY) / viewRef.current.zoom;
+    const sid = pickProvince(idx, wx, wy);
+    if (sid) {
+      onProvinceHover({ shape_id: sid, clientX: e.clientX, clientY: e.clientY });
+    } else {
+      onProvinceHover(null);
+    }
   };
-  const onMouseUp = () => {
+
+  const onMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    const wasDrag = drag && drag.moved > 4;
     dragRef.current = null;
     setDragging(false);
+    if (wasDrag || !onProvinceClick) return;
+
+    const c = hostRef.current;
+    const idx = indexRef.current;
+    if (!c || !idx) return;
+    const rect = c.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const wx = (sx - viewRef.current.panX) / viewRef.current.zoom;
+    const wy = (sy - viewRef.current.panY) / viewRef.current.zoom;
+    const sid = pickProvince(idx, wx, wy);
+    if (sid) onProvinceClick(sid);
+  };
+
+  const onMouseLeave = () => {
+    dragRef.current = null;
+    setDragging(false);
+    if (onProvinceHover) onProvinceHover(null);
   };
 
   const onWheel = useCallback(
@@ -257,7 +326,7 @@ export function WorldMap({
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
+        onMouseLeave={onMouseLeave}
         onWheel={onWheel}
         style={{
           position: "absolute",

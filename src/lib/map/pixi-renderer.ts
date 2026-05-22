@@ -14,6 +14,7 @@ import type { GeoPath } from "d3-geo";
 import type { ProvinceFeature } from "./types";
 import { worldExtentAtBase } from "./renderer";
 import type { City, CityKind } from "./cities";
+import type { Country } from "./countries";
 
 /**
  * A geoPath context that captures projected polygon rings as flat number
@@ -55,6 +56,8 @@ export interface SceneHandles {
   bordersContainer: Container;
   /** Sibling container on the stage — city markers, kept at constant screen size. */
   cityContainer: Container;
+  /** Sibling container on the stage — country labels (above provinces, below cities). */
+  countryLabelContainer: Container;
   destroy(): void;
 }
 
@@ -85,6 +88,12 @@ export async function createPixiScene(
   mapContainer.addChild(bordersContainer);
   app.stage.addChild(mapContainer);
 
+  // Country labels go between provinces and cities. Like cities, they live on
+  // the stage (not inside mapContainer) so font size stays constant.
+  const countryLabelContainer = new Container();
+  countryLabelContainer.eventMode = "none";
+  app.stage.addChild(countryLabelContainer);
+
   // Cities sit on the stage (above mapContainer) so they don't get scaled by
   // the map's pan/zoom transform — markers stay constant size on screen.
   const cityContainer = new Container();
@@ -98,6 +107,7 @@ export async function createPixiScene(
     fillsContainer,
     bordersContainer,
     cityContainer,
+    countryLabelContainer,
     destroy() {
       try {
         app.destroy({ removeView: true }, { children: true, texture: true });
@@ -678,6 +688,152 @@ export function resizeRenderer(
   height: number,
 ): void {
   app.renderer.resize(width, height);
+}
+
+// ─── Country name labels ───────────────────────────────────────────────────
+
+export interface CountryLabel {
+  country: Country;
+  worldX: number;
+  worldY: number;
+  /** Approx country diameter in world-pixels at zoom 1 (for font sizing). */
+  worldSize: number;
+  text: Text;
+}
+
+export interface CountryLabelLayer {
+  container: Container;
+  labels: CountryLabel[];
+  baseStyle: TextStyle;
+}
+
+export function createCountryLabelLayer(container: Container): CountryLabelLayer {
+  const baseStyle = new TextStyle({
+    fontFamily: '"Inter Variable", "Inter", system-ui, Arial, sans-serif',
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: 2.4,
+    fill: 0xf2ead7,
+    stroke: { color: 0x0a0a0a, width: 4 },
+    align: "center",
+    dropShadow: {
+      color: 0x000000,
+      distance: 1,
+      blur: 3,
+      angle: Math.PI / 4,
+      alpha: 0.85,
+    },
+  });
+  return { container, labels: [], baseStyle };
+}
+
+/**
+ * Rebuild the country name layer. Each label is a `Text` placed at the
+ * country's Natural Earth label anchor, in uppercase tracked form. Visibility
+ * is driven by zoom — see `updateCountryLabels`.
+ */
+export function buildCountryLabels(
+  layer: CountryLabelLayer,
+  countries: Country[],
+  width: number,
+  height: number,
+): void {
+  for (const child of [...layer.container.children]) {
+    layer.container.removeChild(child);
+    child.destroy();
+  }
+  layer.labels.length = 0;
+
+  const projection = geoEquirectangular()
+    .scale(width / (2 * Math.PI))
+    .translate([width / 2, height / 2])
+    .rotate([0, 0])
+    .center([0, 0]);
+
+  for (const country of countries) {
+    const projected = projection([country.label_lon, country.label_lat]);
+    if (!projected) continue;
+    const [wx, wy] = projected;
+
+    // worldSize ≈ projected width of the country at zoom 1, in canvas pixels.
+    const [x0, , x1] = country.bbox;
+    const worldSize = Math.abs(((x1 - x0) / 360) * width);
+
+    const text = new Text({
+      text: country.name.toUpperCase(),
+      style: layer.baseStyle,
+    });
+    text.anchor.set(0.5, 0.5);
+    text.visible = false;
+    layer.container.addChild(text);
+    layer.labels.push({ country, worldX: wx, worldY: wy, worldSize, text });
+  }
+}
+
+/**
+ * Update country label visibility, position, and per-country font size.
+ *   - Tiny countries (worldSize < threshold for current zoom) stay hidden.
+ *   - Font size scales with the country's projected pixel size; we want a
+ *     country to read at "fits inside the country" weight.
+ *   - Fade in/out near the visibility boundary instead of popping.
+ */
+export function updateCountryLabels(
+  layer: CountryLabelLayer,
+  view: { panX: number; panY: number; zoom: number },
+  canvas: { w: number; h: number },
+): void {
+  // Visibility band: anything whose pixel diameter at current zoom is between
+  // ~70 (too small to read) and ~700 (so big the label feels lost) qualifies.
+  const minPx = 80;
+  const fadeMinPx = 110;
+  const fadeMaxPx = 900;
+  const maxPx = 1400;
+
+  for (const lbl of layer.labels) {
+    const sx = lbl.worldX * view.zoom + view.panX;
+    const sy = lbl.worldY * view.zoom + view.panY;
+    const projectedPx = lbl.worldSize * view.zoom;
+
+    const offscreen =
+      sx < -200 || sx > canvas.w + 200 || sy < -100 || sy > canvas.h + 100;
+    if (offscreen || projectedPx < minPx || projectedPx > maxPx) {
+      lbl.text.visible = false;
+      continue;
+    }
+
+    // Smooth fade near the band edges.
+    let alpha = 1;
+    if (projectedPx < fadeMinPx) {
+      alpha = (projectedPx - minPx) / (fadeMinPx - minPx);
+    } else if (projectedPx > fadeMaxPx) {
+      alpha = Math.max(0, (maxPx - projectedPx) / (maxPx - fadeMaxPx));
+    }
+    if (alpha <= 0.03) {
+      lbl.text.visible = false;
+      continue;
+    }
+
+    // Font size: roughly proportional to country diameter, clamped to a
+    // legible range. Bigger countries get bigger names, same as HOI4 / EU4.
+    const fontSize = clamp(projectedPx / 18, 12, 34);
+    if (Math.abs(lbl.text.style.fontSize - fontSize) > 0.5) {
+      lbl.text.style.fontSize = fontSize;
+      lbl.text.style.letterSpacing = clamp(fontSize * 0.15, 2, 6);
+      lbl.text.style.stroke = {
+        color: 0x0a0a0a,
+        width: clamp(fontSize / 4, 3, 6),
+      };
+    }
+
+    lbl.text.x = sx;
+    lbl.text.y = sy;
+    lbl.text.alpha = alpha;
+    lbl.text.visible = true;
+  }
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, n));
 }
 
 export { worldExtentAtBase };

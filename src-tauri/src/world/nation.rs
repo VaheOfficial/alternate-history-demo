@@ -91,6 +91,11 @@ pub struct BuildOrder {
 pub struct Nation {
     pub id: NationId,
     pub name: String,
+    /// ISO 3166-1 alpha-3 code (e.g. "USA"). Used to join with Natural Earth
+    /// province + country data. Empty for fictional / sub-national nations
+    /// created mid-game.
+    #[serde(default)]
+    pub iso_a3: String,
     pub government: GovernmentType,
     pub leader: NpcId,
 
@@ -110,11 +115,20 @@ pub struct Nation {
     pub tech: TechLevel,
     pub doctrine: DoctrineId,
 
+    /// Natural Earth `mapcolor13` (1..13) — adjacent-country-aware color
+    /// index. Drives default UI fill in absence of player overrides.
+    #[serde(default = "default_map_color")]
+    pub map_color: u8,
+
     #[serde(default)]
     pub relations: HashMap<NationId, i32>,
 
     #[serde(default)]
     pub build_queue: Vec<BuildOrder>,
+}
+
+fn default_map_color() -> u8 {
+    1
 }
 
 #[cfg(test)]
@@ -127,6 +141,7 @@ mod tests {
         let n = Nation {
             id: NationId::new(),
             name: "Test".into(),
+            iso_a3: "TST".into(),
             government: GovernmentType::Democracy,
             leader: NpcId::new(),
             treasury: 100,
@@ -140,6 +155,7 @@ mod tests {
             resources: ResourceStockpile::default(),
             tech: TechLevel::default(),
             doctrine: DoctrineId::DefenseInDepth,
+            map_color: 1,
             relations: HashMap::new(),
             build_queue: Vec::new(),
         };

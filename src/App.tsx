@@ -1,24 +1,51 @@
 import { useState } from "react";
 import "./App.css";
-import { MapPage } from "./components/Map/MapPage";
+import { GameSession } from "./components/Game/GameSession";
+import { LandingPage } from "./components/Landing/LandingPage";
 import { Settings } from "./components/Settings";
-import { Tabs } from "./components/shared/Tabs";
+import type { World } from "./lib/game/types";
 
-type TabKey = "settings" | "map";
+type Screen =
+  | { kind: "landing" }
+  | { kind: "settings" }
+  | { kind: "session"; world: World };
 
 function App() {
-  const [tab, setTab] = useState<TabKey>("settings");
+  const [screen, setScreen] = useState<Screen>({ kind: "landing" });
+
+  if (screen.kind === "landing") {
+    return (
+      <main>
+        <LandingPage
+          onLoaded={(world) => setScreen({ kind: "session", world })}
+          onOpenSettings={() => setScreen({ kind: "settings" })}
+        />
+      </main>
+    );
+  }
+
+  if (screen.kind === "settings") {
+    return (
+      <main>
+        <div style={{ padding: "16px 20px 0" }}>
+          <button
+            onClick={() => setScreen({ kind: "landing" })}
+            className="ahd-button"
+          >
+            ← Back
+          </button>
+        </div>
+        <Settings />
+      </main>
+    );
+  }
+
   return (
     <main>
-      <Tabs<TabKey>
-        tabs={[
-          { key: "settings", label: "Settings" },
-          { key: "map", label: "Map" },
-        ]}
-        active={tab}
-        onChange={setTab}
+      <GameSession
+        world={screen.world}
+        onExit={() => setScreen({ kind: "landing" })}
       />
-      {tab === "settings" ? <Settings /> : <MapPage />}
     </main>
   );
 }

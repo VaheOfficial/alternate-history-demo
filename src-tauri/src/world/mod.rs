@@ -7,6 +7,7 @@ pub mod ids;
 pub mod nation;
 pub mod npc;
 pub mod province;
+pub mod scenario;
 pub mod treaty;
 pub mod unit;
 pub mod world;

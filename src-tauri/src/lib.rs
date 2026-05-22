@@ -70,6 +70,7 @@ pub fn run() {
             commands::saves::save_snapshot_cmd,
             commands::saves::load_snapshot_cmd,
             commands::saves::list_snapshots_cmd,
+            commands::saves::create_modern_day_save_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

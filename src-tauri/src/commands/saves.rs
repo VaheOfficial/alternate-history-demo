@@ -1,4 +1,5 @@
 use chrono::NaiveDate;
+use serde::Serialize;
 
 use crate::error::{AppError, Result};
 use crate::saves::manager::{
@@ -7,7 +8,14 @@ use crate::saves::manager::{
 };
 use crate::saves::snapshot::{list_snapshots, load_snapshot, save_snapshot, SnapshotMeta};
 use crate::world::ids::{BranchId, SaveId};
+use crate::world::scenario::build_modern_world;
 use crate::world::world::World;
+
+#[derive(Debug, Serialize)]
+pub struct ModernSaveBootstrap {
+    pub save: SaveSummary,
+    pub world: World,
+}
 
 #[tauri::command]
 pub async fn create_save_cmd(
@@ -72,4 +80,29 @@ pub async fn list_snapshots_cmd(
     branch: BranchId,
 ) -> Result<Vec<SnapshotMeta>> {
     list_snapshots(save, branch).await
+}
+
+/// Bootstrap a "Modern Day" game in one call: create the save row, build the
+/// initial World from Natural Earth data, and persist the round-0 snapshot.
+/// Returns both the SaveSummary (with the canonical initial branch_id) and
+/// the constructed World so the frontend can render immediately.
+#[tauri::command]
+pub async fn create_modern_day_save_cmd(name: String) -> Result<ModernSaveBootstrap> {
+    let start = chrono::Local::now().date_naive();
+    let summary = create_save(CreateSaveRequest {
+        name,
+        scenario_id: Some("modern_day".into()),
+        start_date: start,
+    })
+    .await?;
+
+    let mut world = build_modern_world(summary.id, summary.initial_branch_id, start);
+    world.save_id = summary.id;
+    world.branch_id = summary.initial_branch_id;
+    save_snapshot(world.clone()).await?;
+
+    Ok(ModernSaveBootstrap {
+        save: summary,
+        world,
+    })
 }

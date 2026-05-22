@@ -4,10 +4,13 @@ import { downloadCached } from "./lib/download.ts";
 import { simplifyToTopoJson } from "./lib/simplify.ts";
 import { extractMeta } from "./lib/extract-meta.ts";
 import { extractCities } from "./lib/extract-cities.ts";
+import { extractCountries } from "./lib/extract-countries.ts";
 import { clearTiles, generateTilePyramid, tilesDirSize } from "./lib/tiles.ts";
 
 const NATURAL_EARTH_ADM1 =
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson";
+const NATURAL_EARTH_ADM0 =
+  "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_0_countries.geojson";
 const NATURAL_EARTH_CITIES =
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places_simple.geojson";
 
@@ -45,6 +48,19 @@ async function main() {
   );
   const meta = await extractMeta(rawPath, `${PUBLIC_DIR}/world-meta.json`);
   console.log(`[build-map] world-meta.json written (${meta.count} provinces)`);
+
+  // --- Country polygons (names + label anchors) ---
+  const countriesRawPath = `${CACHE_DIR}/ne_10m_admin_0_countries.geojson`;
+  await downloadCached({
+    url: NATURAL_EARTH_ADM0,
+    destination: countriesRawPath,
+    expectedMinBytes: 1 * 1024 * 1024,
+  });
+  const countries = await extractCountries(
+    countriesRawPath,
+    `${PUBLIC_DIR}/countries.json`,
+  );
+  console.log(`[build-map] countries.json written (${countries.count} countries)`);
 
   // --- Populated places (cities + capitals) ---
   const citiesRawPath = `${CACHE_DIR}/ne_10m_populated_places_simple.geojson`;
