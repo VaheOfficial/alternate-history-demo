@@ -126,9 +126,9 @@ In `package.json` `"scripts"`:
 "map:clean": "node -e \"const fs = require('fs'); for (const f of ['public/world.topojson','public/world-meta.json']) try { fs.unlinkSync(f) } catch {}\""
 ```
 
-- [ ] **Step 3: pnpm-workspace.yaml — allow mapshaper postinstall**
+- [ ] **Step 3: pnpm-workspace.yaml — allow build scripts if pnpm warns**
 
-mapshaper has a postinstall step (it depends on `optipng-bin` / similar through its tree on some platforms — verify after install). If pnpm flags any ignored builds, add them to `pnpm-workspace.yaml` under `allowBuilds:`.
+Run `pnpm install` (Step 4 below). If pnpm prints `[ERR_PNPM_IGNORED_BUILDS]` listing any dep (mapshaper or any of its transitive deps with postinstall scripts), add their names under `allowBuilds:` in `pnpm-workspace.yaml` (next to the existing `esbuild: true`). The current pnpm 11 field name is `allowBuilds` (per the existing `pnpm-workspace.yaml` in this repo).
 
 - [ ] **Step 4: Verify install**
 
@@ -271,10 +271,11 @@ If download fails (network, GitHub rate limits): keep the script's expectedMinBy
 - [ ] **Step 6: Commit**
 
 ```
-git add scripts/.cache/.gitkeep scripts/build-map.ts scripts/lib/download.ts scripts/tsconfig.json .gitignore package.json pnpm-lock.yaml 2>/dev/null
-# Note: scripts/.cache contents are gitignored, so .cache dir itself won't be staged
+git add scripts/build-map.ts scripts/lib/download.ts scripts/tsconfig.json .gitignore
 git commit -m "Plan 03: build-map script + downloader (geoBoundaries CGAZ ADM1)"
 ```
+
+(`scripts/.cache/` is gitignored entirely; nothing inside it is staged.)
 
 ---
 
