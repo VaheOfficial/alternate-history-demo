@@ -58,6 +58,11 @@ struct OllamaChatRequest<'a> {
     options: Option<OllamaOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     keep_alive: Option<&'a str>,
+    /// Ollama's strict JSON output mode. When set to "json", the model is
+    /// constrained to emit valid JSON — far more reliable than just asking
+    /// nicely in the prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,6 +185,10 @@ impl Provider for OllamaProvider {
                 None
             },
             keep_alive: request.keep_alive.as_deref(),
+            format: request
+                .response_format
+                .as_deref()
+                .filter(|f| *f == "json"),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -230,6 +239,10 @@ impl Provider for OllamaProvider {
                 None
             },
             keep_alive: request.keep_alive.as_deref(),
+            format: request
+                .response_format
+                .as_deref()
+                .filter(|f| *f == "json"),
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -297,6 +310,7 @@ impl Provider for OllamaProvider {
             stream: false,
             options: None,
             keep_alive: Some("0"),
+            format: None,
         };
         let resp = self.client.post(&url).json(&body).send().await?;
         let status = resp.status();
@@ -375,6 +389,7 @@ mod tests {
             temperature: None,
             stream: false,
             keep_alive: None,
+            response_format: None,
         };
         let resp = provider.chat(req).await.expect("chat should succeed");
         assert_eq!(resp.content, "Hello, world!");
@@ -411,6 +426,7 @@ mod tests {
             temperature: None,
             stream: true,
             keep_alive: None,
+            response_format: None,
         };
         let mut stream = provider.chat_stream(req).await.expect("stream should start");
         let mut combined = String::new();

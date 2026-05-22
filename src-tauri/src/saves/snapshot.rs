@@ -64,7 +64,12 @@ pub async fn load_snapshot(save: SaveId, branch: BranchId, round: u32) -> Result
                 }
                 other => rusqlite_err(other),
             })?;
-        Ok(serde_json::from_str::<World>(&json)?)
+        let mut world = serde_json::from_str::<World>(&json)?;
+        // Auto-refresh stale Nation stats from canonical countries.json if
+        // they look like the old prov_count*2M placeholder. Province
+        // ownership, goals, events, treaties are preserved.
+        crate::world::migration::migrate_stale_stats(&mut world);
+        Ok(world)
     })
     .await
     .map_err(|e| AppError::InvalidArgument(format!("join: {}", e)))?

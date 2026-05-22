@@ -1,13 +1,12 @@
 import { type ReactNode } from "react";
 import {
   ScrollIcon,
-  FactoryIcon,
   DiskIcon,
   BookIcon,
   ChevronDownIcon,
 } from "../ui/Icon";
 
-export type DockTab = "orders" | "production" | "saves" | "history";
+export type DockTab = "orders" | "saves" | "history";
 
 export function CommandDock({
   active,
@@ -27,7 +26,6 @@ export function CommandDock({
 }) {
   const tabs: Array<{ key: DockTab; label: string; icon: ReactNode }> = [
     { key: "orders", label: "Orders", icon: <ScrollIcon /> },
-    { key: "production", label: "Production", icon: <FactoryIcon /> },
     { key: "saves", label: "Saves", icon: <DiskIcon /> },
     { key: "history", label: "History", icon: <BookIcon /> },
   ];

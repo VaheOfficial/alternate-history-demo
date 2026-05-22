@@ -10,14 +10,12 @@ import {
   type NationTurn,
   type NpcTurnResult,
   type OrchestratorPick,
-  type ValidatorResult,
 } from "../../lib/game/tauri";
 import { listProviderConfigs, listModels } from "../../lib/tauri";
 import type { ProviderConfig } from "../../lib/types";
 import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
-import { ActionPanel } from "./ActionPanel";
-import { ProductionPanel } from "./ProductionPanel";
+import { OrderQueuePanel } from "./OrderQueuePanel";
 import { SavesPanel } from "./SavesPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { TurnSummaryModal, type EconomyDelta } from "./TurnSummaryModal";
@@ -170,10 +168,9 @@ export function GameSession({
     }
   };
 
-  const handleValidatorResult = (r: ValidatorResult) => {
-    if (r.accepted) setWorld(r.world);
-    if (r.next_tick_days != null) setPacingHint(r.next_tick_days);
-  };
+  // OrderQueuePanel updates the world directly via onWorldUpdate; pacing
+  // hint comes from the validator's response there. Pacing is plumbed
+  // through the world side-effect for now.
 
   const playerNation = world.player_nation
     ? world.nations.find((n) => n.id === world.player_nation) ?? null
@@ -261,25 +258,14 @@ export function GameSession({
 
   const dockPanels = {
     orders: (
-      <ActionPanel
+      <OrderQueuePanel
         world={world}
         providers={providers}
         providerId={providerId}
         model={model}
         onProviderChange={setProviderId}
         onModelChange={setModel}
-        onResult={handleValidatorResult}
-      />
-    ),
-    production: (
-      <ProductionPanel
-        world={world}
-        providerId={providerId}
-        model={model}
-        noProvider={providers.length === 0}
-        onResult={(r) => {
-          if (r.accepted) setWorld(r.world);
-        }}
+        onWorldUpdate={setWorld}
       />
     ),
     saves: <SavesPanel world={world} onLoaded={setWorld} />,

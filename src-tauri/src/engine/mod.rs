@@ -7,6 +7,8 @@
 pub mod apply;
 pub mod combat;
 pub mod economy;
+#[cfg(test)]
+pub mod mock_provider;
 pub mod npc_turn;
 pub mod production;
 pub mod tick;

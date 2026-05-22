@@ -159,6 +159,7 @@ async fn orchestrate(
         temperature: Some(0.5),
         stream: false,
         keep_alive: None,
+        response_format: Some("json".to_string()),
     };
     let resp = provider
         .chat(req)
@@ -295,6 +296,7 @@ async fn run_nation_turn(
         temperature: Some(0.6),
         stream: false,
         keep_alive: None,
+        response_format: Some("json".to_string()),
     };
 
     let resp = provider
@@ -378,10 +380,24 @@ fn build_recent_events(world: &World) -> String {
 fn parse_envelope<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
     let cleaned = strip_code_fences(raw);
     let block = find_json_block(&cleaned)?;
-    serde_json::from_str(block).ok()
+    if let Ok(v) = serde_json::from_str::<T>(block) {
+        return Some(v);
+    }
+    let repaired = repair_json(block);
+    serde_json::from_str::<T>(&repaired).ok()
 }
 
 fn strip_code_fences(s: &str) -> String {
+    let mut s = String::from(s);
+    while let (Some(open), Some(close)) = (s.find("<think>"), s.find("</think>")) {
+        if close > open {
+            let before = &s[..open];
+            let after = &s[close + "</think>".len()..];
+            s = format!("{}{}", before, after);
+        } else {
+            break;
+        }
+    }
     if let (Some(start), Some(end)) = (s.find("```"), s.rfind("```")) {
         if end > start {
             let after_fence = &s[start + 3..end];
@@ -393,7 +409,81 @@ fn strip_code_fences(s: &str) -> String {
             return inner.to_string();
         }
     }
-    s.to_string()
+    s
+}
+
+/// Strip trailing commas + balance bracket counts at EOF — covers the two
+/// most common LLM JSON syntax mistakes.
+fn repair_json(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut in_str = false;
+    let mut esc = false;
+    for &c in &chars {
+        if in_str {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+            out.push(c);
+            continue;
+        }
+        if c == ']' || c == '}' {
+            while let Some(&last) = out.last() {
+                if last.is_whitespace() {
+                    out.pop();
+                } else if last == ',' {
+                    out.pop();
+                    break;
+                } else {
+                    break;
+                }
+            }
+        }
+        out.push(c);
+    }
+    let mut s2: String = out.into_iter().collect();
+    let mut depth_obj = 0i32;
+    let mut depth_arr = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    for c in s2.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth_obj += 1,
+            '}' => depth_obj -= 1,
+            '[' => depth_arr += 1,
+            ']' => depth_arr -= 1,
+            _ => {}
+        }
+    }
+    while depth_arr > 0 {
+        s2.push(']');
+        depth_arr -= 1;
+    }
+    while depth_obj > 0 {
+        s2.push('}');
+        depth_obj -= 1;
+    }
+    s2
 }
 
 fn find_json_block(s: &str) -> Option<&str> {
@@ -431,7 +521,8 @@ fn find_json_block(s: &str) -> Option<&str> {
             _ => {}
         }
     }
-    None
+    // Truncated JSON — return from `start` so repair can balance brackets.
+    start.map(|st| &s[st..])
 }
 
 #[cfg(test)]
@@ -465,5 +556,161 @@ mod tests {
         let raw = "```json\n{\"ok\": true}\n```";
         let t: T = parse_envelope(raw).unwrap();
         assert!(t.ok);
+    }
+
+    #[test]
+    fn parse_envelope_handles_prose_wrapped() {
+        #[derive(Deserialize)]
+        struct T {
+            ok: bool,
+        }
+        let raw = "Here's the answer: {\"ok\": true}\nlet me know if you need more.";
+        let t: T = parse_envelope(raw).unwrap();
+        assert!(t.ok);
+    }
+
+    #[test]
+    fn parse_envelope_handles_think_prefix() {
+        #[derive(Deserialize)]
+        struct T {
+            ok: bool,
+        }
+        let raw = "<think>need to figure out the best move</think>{\"ok\": true}";
+        let t: T = parse_envelope(raw).unwrap();
+        assert!(t.ok);
+    }
+
+    #[test]
+    fn parse_envelope_repairs_trailing_comma() {
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(default)]
+            ok: Option<bool>,
+        }
+        let raw = "{\"ok\": true,}";
+        let t: T = parse_envelope(raw).unwrap();
+        assert_eq!(t.ok, Some(true));
+    }
+
+    #[test]
+    fn parse_envelope_repairs_truncated() {
+        // Realistic LLM ran-out-of-tokens output.
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(default)]
+            ok: Option<bool>,
+        }
+        let raw = "{\"ok\": true";
+        let t: T = parse_envelope(raw).unwrap();
+        assert_eq!(t.ok, Some(true));
+    }
+
+    #[tokio::test]
+    async fn orchestrator_round_trip_with_mock() {
+        use crate::engine::mock_provider::MockProvider;
+        let mock = MockProvider::new(vec![
+            r#"{"nations": [{"iso": "USA", "reason": "active in NATO"}, {"iso": "CHN", "reason": "Taiwan tension"}]}"#,
+        ]);
+        let w = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let picks = orchestrate(mock.as_ref(), "mock", &w, 7, 4)
+            .await
+            .expect("orchestrator should succeed");
+        assert_eq!(picks.len(), 2);
+        assert_eq!(picks[0].iso, "USA");
+        assert_eq!(picks[1].iso, "CHN");
+    }
+
+    #[tokio::test]
+    async fn orchestrator_handles_fenced_response() {
+        use crate::engine::mock_provider::MockProvider;
+        let mock = MockProvider::new(vec![
+            "```json\n{\"nations\": [{\"iso\": \"RUS\", \"reason\": \"Ukraine\"}]}\n```",
+        ]);
+        let w = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let picks = orchestrate(mock.as_ref(), "mock", &w, 7, 4).await.unwrap();
+        assert_eq!(picks.len(), 1);
+        assert_eq!(picks[0].iso, "RUS");
+    }
+
+    #[tokio::test]
+    async fn nation_turn_applies_modify_relation() {
+        use crate::engine::mock_provider::MockProvider;
+        let w0 = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let usa = w0.nations.iter().find(|n| n.iso_a3 == "USA").unwrap();
+        let chn = w0.nations.iter().find(|n| n.iso_a3 == "CHN").unwrap();
+        // Orchestrator → 1 nation (USA). USA actor → modify_relation toward CHN -20.
+        let mock = MockProvider::new(vec![
+            r#"{"nations": [{"iso": "USA", "reason": "Indo-Pacific tension"}]}"#,
+            &format!(
+                "{{\"narrative\": \"Pacific patrol expanded.\", \"actions\": [{{\"action\": \"modify_relation\", \"from\": \"{}\", \"to\": \"{}\", \"delta\": -20, \"reason\": \"freedom-of-navigation\"}}]}}",
+                usa.id, chn.id
+            ),
+        ]);
+        let result = run_npc_turn(mock.clone(), "mock".into(), w0.clone(), 7, 4)
+            .await
+            .unwrap();
+        assert_eq!(result.nation_turns.len(), 1);
+        assert_eq!(result.nation_turns[0].applied.len(), 1);
+        let usa_after = result
+            .world
+            .nations
+            .iter()
+            .find(|n| n.iso_a3 == "USA")
+            .unwrap();
+        assert_eq!(usa_after.relations.get(&chn.id).copied(), Some(-20));
+    }
+
+    #[tokio::test]
+    async fn nation_turn_persists_goal_update() {
+        use crate::engine::mock_provider::MockProvider;
+        let w0 = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let mock = MockProvider::new(vec![
+            r#"{"nations": [{"iso": "DEU", "reason": "EU policy lead"}]}"#,
+            r#"{"narrative": "Bundeswehr reform announced.", "actions": [], "goal_update": ["rebuild Bundeswehr to 200k strength", "lead EU defense industrial policy"]}"#,
+        ]);
+        let result = run_npc_turn(mock, "mock".into(), w0, 14, 4).await.unwrap();
+        let deu = result
+            .world
+            .nations
+            .iter()
+            .find(|n| n.iso_a3 == "DEU")
+            .unwrap();
+        assert_eq!(deu.goals.len(), 2);
+        assert!(deu.goals[0].contains("Bundeswehr"));
+    }
+
+    #[tokio::test]
+    async fn nation_turn_survives_garbage_actor_output() {
+        use crate::engine::mock_provider::MockProvider;
+        let w0 = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let mock = MockProvider::new(vec![
+            r#"{"nations": [{"iso": "USA", "reason": "anything"}]}"#,
+            "completely unparseable garbage with no JSON",
+        ]);
+        let result = run_npc_turn(mock, "mock".into(), w0, 7, 4).await.unwrap();
+        // Should not crash; should produce a NationTurn entry with the
+        // unparseable narrative captured.
+        assert_eq!(result.nation_turns.len(), 1);
+        assert!(result.nation_turns[0].narrative.contains("unparseable"));
     }
 }

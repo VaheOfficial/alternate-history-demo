@@ -122,6 +122,7 @@ pub async fn request_production_cmd(
         temperature: Some(0.4),
         stream: false,
         keep_alive: None,
+        response_format: Some("json".to_string()),
     };
     let resp = provider.chat(req).await?;
     let raw = resp.content;
@@ -292,6 +293,7 @@ pub async fn validate_action_cmd(
         temperature: Some(0.4),
         stream: false,
         keep_alive: None,
+        response_format: Some("json".to_string()),
     };
     let response = provider.chat(req).await?;
     let raw = response.content;
@@ -511,23 +513,40 @@ fn build_user_prompt(world: &World, player_text: &str) -> String {
 /// Extract the largest balanced `{ ... }` block from `raw` and parse it as
 /// the LLM envelope. Tolerant of code fences and surrounding prose.
 fn parse_envelope(raw: &str) -> Option<LlmEnvelope> {
-    let cleaned = strip_code_fences(raw);
-    let block = find_json_block(&cleaned)?;
-    serde_json::from_str::<LlmEnvelope>(block).ok()
+    parse_with_repair::<LlmEnvelope>(raw)
 }
 
 fn parse_production_envelope(raw: &str) -> Option<ProductionEnvelope> {
+    parse_with_repair::<ProductionEnvelope>(raw)
+}
+
+/// Try parsing as-is; if it fails, run cheap repair (strip fences, trailing
+/// commas, balance brackets) and try again.
+fn parse_with_repair<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
     let cleaned = strip_code_fences(raw);
     let block = find_json_block(&cleaned)?;
-    serde_json::from_str::<ProductionEnvelope>(block).ok()
+    if let Ok(v) = serde_json::from_str::<T>(block) {
+        return Some(v);
+    }
+    let repaired = repair_json(block);
+    serde_json::from_str::<T>(&repaired).ok()
 }
 
 fn strip_code_fences(s: &str) -> String {
-    // Naively remove ``` blocks by keeping everything between the first ``` and last ```
-    // if both exist; otherwise return as-is.
+    // 1) Strip <think>...</think> blocks some reasoning models prepend.
+    let mut s = String::from(s);
+    while let (Some(open), Some(close)) = (s.find("<think>"), s.find("</think>")) {
+        if close > open {
+            let before = &s[..open];
+            let after = &s[close + "</think>".len()..];
+            s = format!("{}{}", before, after);
+        } else {
+            break;
+        }
+    }
+    // 2) Strip ``` code fences (with or without language tag).
     if let (Some(start), Some(end)) = (s.find("```"), s.rfind("```")) {
         if end > start {
-            // After the first fence may follow a language tag + newline; strip up to newline.
             let after_fence = &s[start + 3..end];
             let inner = if let Some(nl) = after_fence.find('\n') {
                 &after_fence[nl + 1..]
@@ -537,7 +556,85 @@ fn strip_code_fences(s: &str) -> String {
             return inner.to_string();
         }
     }
-    s.to_string()
+    s
+}
+
+/// Best-effort JSON repair for common LLM mistakes:
+///   - trailing commas before `]` or `}`
+///   - missing closing brackets at EOF (model ran out of tokens)
+fn repair_json(s: &str) -> String {
+    // Strip trailing commas: `,]` → `]`, `,}` → `}`.
+    let mut out: Vec<char> = Vec::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut in_string = false;
+    let mut esc = false;
+    for &c in &chars {
+        if in_string {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            continue;
+        }
+        if c == ']' || c == '}' {
+            // Walk back and drop any whitespace + trailing comma.
+            while let Some(&last) = out.last() {
+                if last.is_whitespace() {
+                    out.pop();
+                } else if last == ',' {
+                    out.pop();
+                    break;
+                } else {
+                    break;
+                }
+            }
+        }
+        out.push(c);
+    }
+    // Balance brackets at the tail.
+    let mut s2: String = out.into_iter().collect();
+    let mut depth_obj = 0i32;
+    let mut depth_arr = 0i32;
+    let mut in_str = false;
+    let mut esc2 = false;
+    for c in s2.chars() {
+        if in_str {
+            if esc2 {
+                esc2 = false;
+            } else if c == '\\' {
+                esc2 = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth_obj += 1,
+            '}' => depth_obj -= 1,
+            '[' => depth_arr += 1,
+            ']' => depth_arr -= 1,
+            _ => {}
+        }
+    }
+    while depth_arr > 0 {
+        s2.push(']');
+        depth_arr -= 1;
+    }
+    while depth_obj > 0 {
+        s2.push('}');
+        depth_obj -= 1;
+    }
+    s2
 }
 
 fn find_json_block(s: &str) -> Option<&str> {
@@ -575,7 +672,9 @@ fn find_json_block(s: &str) -> Option<&str> {
             _ => {}
         }
     }
-    None
+    // Truncated JSON (LLM ran out of tokens) — return from `start` to end so
+    // the repair pass can balance the brackets.
+    start.map(|st| &s[st..])
 }
 
 #[cfg(test)]
@@ -600,5 +699,36 @@ mod tests {
     #[test]
     fn parse_envelope_returns_none_on_garbage() {
         assert!(parse_envelope("definitely not json").is_none());
+    }
+
+    #[test]
+    fn parse_envelope_handles_trailing_comma() {
+        let raw = r#"{"accepted": true, "narrative": "ok", "actions": [],}"#;
+        let env = parse_envelope(raw).expect("should repair trailing comma");
+        assert_eq!(env.accepted, Some(true));
+    }
+
+    #[test]
+    fn parse_envelope_handles_truncated_json() {
+        // Missing closing braces — common when LLM hits max_tokens.
+        let raw = r#"{"accepted": true, "narrative": "trunc"#;
+        // Won't parse cleanly even after repair (string isn't closed), but
+        // shouldn't panic.
+        let _ = parse_envelope(raw);
+    }
+
+    #[test]
+    fn parse_envelope_strips_think_tags() {
+        let raw = "<think>let me think about this</think>{\"accepted\": false, \"narrative\": \"hmm\"}";
+        let env = parse_envelope(raw).expect("should strip think tags");
+        assert_eq!(env.accepted, Some(false));
+    }
+
+    #[test]
+    fn parse_envelope_repairs_missing_closing_brackets() {
+        // Object with one missing closing brace.
+        let raw = r#"{"accepted": true, "narrative": "ok", "actions": []"#;
+        let env = parse_envelope(raw).expect("should balance brackets");
+        assert_eq!(env.accepted, Some(true));
     }
 }

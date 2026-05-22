@@ -102,6 +102,14 @@ struct OAIChatReq<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<OAIResponseFormat<'a>>,
+}
+
+#[derive(Serialize)]
+struct OAIResponseFormat<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
 }
 
 #[derive(Serialize)]
@@ -225,6 +233,13 @@ impl Provider for OpenAICompatProvider {
             max_tokens: request.max_tokens,
             temperature: request.temperature,
             stream: false,
+            response_format: request
+                .response_format
+                .as_deref()
+                .filter(|f| *f == "json")
+                .map(|_| OAIResponseFormat {
+                    kind: "json_object",
+                }),
         };
         let resp = self
             .client
@@ -284,6 +299,7 @@ impl Provider for OpenAICompatProvider {
             max_tokens: request.max_tokens,
             temperature: request.temperature,
             stream: true,
+            response_format: None,
         };
         let resp = self
             .client
@@ -396,6 +412,7 @@ mod tests {
             temperature: None,
             stream: false,
             keep_alive: None,
+            response_format: None,
         };
         let resp = p.chat(req).await.unwrap();
         assert_eq!(resp.content, "Hi!");
@@ -430,6 +447,7 @@ mod tests {
             temperature: None,
             stream: true,
             keep_alive: None,
+            response_format: None,
         };
         let mut s = p.chat_stream(req).await.unwrap();
         let mut combined = String::new();

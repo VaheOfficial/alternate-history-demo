@@ -4,6 +4,7 @@ pub mod crisis;
 pub mod event;
 pub mod frontline;
 pub mod ids;
+pub mod migration;
 pub mod nation;
 pub mod npc;
 pub mod province;

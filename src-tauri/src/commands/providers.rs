@@ -89,6 +89,7 @@ pub async fn test_chat(
         temperature: Some(0.7),
         stream: false,
         keep_alive,
+        response_format: None,
     };
     Ok(p.chat(req).await?)
 }

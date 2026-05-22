@@ -226,6 +226,7 @@ mod tests {
             temperature: None,
             stream: false,
             keep_alive: None,
+            response_format: None,
         };
         let resp = p.chat(req).await.unwrap();
         assert_eq!(resp.content, "Hi!");

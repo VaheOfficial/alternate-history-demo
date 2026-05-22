@@ -56,6 +56,12 @@ pub struct ChatRequest {
     /// don't support the concept (cloud providers, etc.).
     #[serde(default)]
     pub keep_alive: Option<String>,
+    /// When set to `"json"`, the provider is instructed to force JSON output.
+    /// Ollama: sets `format: "json"`. OpenAI: `response_format: {type: "json_object"}`.
+    /// Anthropic + others without strict JSON mode rely on prompt + parser
+    /// resilience.
+    #[serde(default)]
+    pub response_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
