@@ -1529,9 +1529,10 @@ pub struct World {
 }
 
 impl World {
-    /// Construct a minimal empty world for testing.
-    #[cfg(test)]
-    pub fn empty_for_test(save: SaveId, branch: BranchId, start: NaiveDate) -> Self {
+    /// Construct a minimal empty world. Used by tests + scenario bootstrap (later plans).
+    /// Not behind `#[cfg(test)]` because integration tests live in a separate crate
+    /// and can only see public, non-test-gated items.
+    pub fn empty(save: SaveId, branch: BranchId, start: NaiveDate) -> Self {
         Self {
             save_id: save,
             branch_id: branch,
@@ -1555,7 +1556,7 @@ mod tests {
 
     #[test]
     fn empty_world_serializes_round_trip() {
-        let w = World::empty_for_test(
+        let w = World::empty(
             SaveId::new(),
             BranchId::new(),
             NaiveDate::from_ymd_opt(1939, 9, 1).unwrap(),
@@ -1661,16 +1662,11 @@ pub async fn create_save(req: CreateSaveRequest) -> Result<SaveSummary> {
         .map_err(rusqlite_err)?;
         tx.commit().map_err(rusqlite_err)?;
 
-        let summary = read_summary(&conn, save_id)?
-            .ok_or_else(|| AppError::NotFound("save just created not found".into()))?;
-        Ok(summary)
+        read_summary(&conn, save_id)?
+            .ok_or_else(|| AppError::NotFound("save just created not found".into()))
     })
     .await
-    .map_err(|e| AppError::InvalidArgument(format!("join: {}", e)))??;
-
-    // re-open + return
-    let conn = open_save_db(save_id.0)?;
-    read_summary(&conn, save_id)?.ok_or_else(|| AppError::NotFound("save".into()))
+    .map_err(|e| AppError::InvalidArgument(format!("join: {}", e)))?
 }
 
 pub async fn list_saves() -> Result<Vec<SaveSummary>> {
@@ -2227,8 +2223,7 @@ use alternate_history_demo_lib::saves::manager::{
 use alternate_history_demo_lib::saves::snapshot::{
     list_snapshots, load_snapshot, save_snapshot,
 };
-use alternate_history_demo_lib::world::ids::{BranchId, SaveId};
-use alternate_history_demo_lib::world::world::World;
+use alternate_history_demo_lib::world::World;
 
 #[tokio::test]
 async fn full_save_branch_snapshot_round_trip() {
@@ -2246,7 +2241,7 @@ async fn full_save_branch_snapshot_round_trip() {
 
     // Write 3 snapshots on main branch.
     for round in 0..3u32 {
-        let mut world = World::empty_for_test(
+        let mut world = World::empty(
             save_id,
             main_branch,
             NaiveDate::from_ymd_opt(1939, 9, 1).unwrap(),
@@ -2308,11 +2303,20 @@ async fn full_save_branch_snapshot_round_trip() {
 }
 
 #[tokio::test]
-async fn load_missing_snapshot_returns_not_found() {
-    let save = SaveId::new();
-    let branch = BranchId::new();
-    let res = load_snapshot(save, branch, 0).await;
-    assert!(res.is_err());
+async fn load_missing_round_returns_not_found() {
+    // Create a real save so its DB has the schema, then try a round that doesn't exist.
+    let summary = create_save(CreateSaveRequest {
+        name: "missing-round-test".into(),
+        scenario_id: None,
+        start_date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+    })
+    .await
+    .expect("create_save");
+
+    let res = load_snapshot(summary.id, summary.initial_branch_id, 99).await;
+    assert!(res.is_err(), "expected NotFound for nonexistent round");
+
+    delete_save(summary.id).await.expect("cleanup");
 }
 ```
 
