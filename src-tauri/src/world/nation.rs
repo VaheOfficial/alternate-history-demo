@@ -1,0 +1,151 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use super::ids::{NationId, NpcId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernmentType {
+    Democracy,
+    Monarchy,
+    Republic,
+    Communist,
+    Fascist,
+    MilitaryJunta,
+    Theocracy,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoctrineId {
+    MobileWarfare,
+    DefenseInDepth,
+    MassAssault,
+    SuperiorFirepower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resource {
+    Steel,
+    Oil,
+    Rubber,
+    Tungsten,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResourceStockpile {
+    #[serde(default)]
+    pub steel: i64,
+    #[serde(default)]
+    pub oil: i64,
+    #[serde(default)]
+    pub rubber: i64,
+    #[serde(default)]
+    pub tungsten: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndustrySplit {
+    pub civilian: u8,
+    pub military: u8,
+    pub research: u8,
+}
+
+impl Default for IndustrySplit {
+    fn default() -> Self {
+        Self {
+            civilian: 60,
+            military: 30,
+            research: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TechLevel(pub u8);
+
+impl Default for TechLevel {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitType {
+    Infantry,
+    Armor,
+    Mechanized,
+    Artillery,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildOrder {
+    pub unit_type: UnitType,
+    pub progress: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Nation {
+    pub id: NationId,
+    pub name: String,
+    pub government: GovernmentType,
+    pub leader: NpcId,
+
+    pub treasury: i64,
+    pub gdp: i64,
+    pub population: i64,
+    pub manpower_pool: i64,
+    pub stability: i32,
+    pub war_support: i32,
+
+    pub industry_capacity: u32,
+    #[serde(default)]
+    pub industry_split: IndustrySplit,
+    #[serde(default)]
+    pub resources: ResourceStockpile,
+    #[serde(default)]
+    pub tech: TechLevel,
+    pub doctrine: DoctrineId,
+
+    #[serde(default)]
+    pub relations: HashMap<NationId, i32>,
+
+    #[serde(default)]
+    pub build_queue: Vec<BuildOrder>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::ids::NpcId;
+
+    #[test]
+    fn nation_serializes_round_trip() {
+        let n = Nation {
+            id: NationId::new(),
+            name: "Test".into(),
+            government: GovernmentType::Democracy,
+            leader: NpcId::new(),
+            treasury: 100,
+            gdp: 1000,
+            population: 50_000_000,
+            manpower_pool: 5_000_000,
+            stability: 60,
+            war_support: 40,
+            industry_capacity: 20,
+            industry_split: IndustrySplit::default(),
+            resources: ResourceStockpile::default(),
+            tech: TechLevel::default(),
+            doctrine: DoctrineId::DefenseInDepth,
+            relations: HashMap::new(),
+            build_queue: Vec::new(),
+        };
+        let json = serde_json::to_string(&n).unwrap();
+        let back: Nation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, n.name);
+        assert_eq!(back.doctrine, DoctrineId::DefenseInDepth);
+    }
+}

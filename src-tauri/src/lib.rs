@@ -6,6 +6,7 @@ mod db;
 mod error;
 mod providers;
 mod secrets;
+pub mod world;
 
 use std::sync::Arc;
 use tauri::Manager;
