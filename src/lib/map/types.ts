@@ -5,6 +5,8 @@ export interface ProvinceMeta {
   name: string;
   iso_country: string;
   shape_group: string;
+  /** 1-13 — Natural Earth's pre-computed map color index. */
+  map_color: number;
 }
 
 export interface MetaFile {

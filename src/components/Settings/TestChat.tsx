@@ -109,7 +109,14 @@ export function TestChat({
             </div>
 
             {selectedProvider && (
-              <div style={{ color: "#888", fontSize: "0.8rem", marginLeft: 80 }}>
+              <div
+                style={{
+                  color: "var(--fg-dim)",
+                  fontSize: "var(--fs-xs)",
+                  marginLeft: 90,
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
                 {selectedProvider.base_url}
               </div>
             )}
@@ -138,7 +145,13 @@ export function TestChat({
               </Button>
             </div>
 
-            <div style={{ color: "#888", fontSize: "0.8rem", marginLeft: 80 }}>
+            <div
+              style={{
+                color: "var(--fg-dim)",
+                fontSize: "var(--fs-xs)",
+                marginLeft: 90,
+              }}
+            >
               {modelsLoading
                 ? "Listing models…"
                 : modelsError
@@ -149,16 +162,20 @@ export function TestChat({
             {modelsError && (
               <div
                 style={{
-                  color: "salmon",
-                  fontSize: "0.85rem",
+                  color: "var(--danger)",
+                  fontSize: "var(--fs-sm)",
                   background: "#2a1414",
-                  padding: 8,
-                  borderRadius: 4,
+                  padding: 10,
+                  borderRadius: "var(--radius-md)",
                   border: "1px solid #5a2a2a",
                   whiteSpace: "pre-wrap",
+                  fontFamily: "var(--font-mono)",
+                  lineHeight: 1.45,
                 }}
               >
-                <strong>list_models failed:</strong>
+                <strong style={{ fontFamily: "var(--font-sans)" }}>
+                  list_models failed:
+                </strong>
                 <br />
                 {modelsError}
               </div>
@@ -182,10 +199,11 @@ export function TestChat({
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 6,
-                fontSize: "0.85rem",
-                color: "#bbb",
+                gap: 8,
+                fontSize: "var(--fs-sm)",
+                color: "var(--fg-muted)",
                 cursor: "pointer",
+                minWidth: "auto",
               }}
             >
               <input
@@ -197,11 +215,9 @@ export function TestChat({
             </label>
 
             {!model && !modelsLoading && !modelsError && providerId && (
-              <div style={{ color: "#888", fontSize: "0.8rem" }}>
+              <div style={{ color: "var(--fg-dim)", fontSize: "var(--fs-xs)" }}>
                 Send is disabled because no model is selected. Pull a model with
-                <code style={{ background: "#222", padding: "1px 4px", margin: "0 4px" }}>
-                  ollama pull &lt;name&gt;
-                </code>
+                <code>ollama pull &lt;name&gt;</code>
                 then click Refresh.
               </div>
             )}
@@ -209,15 +225,20 @@ export function TestChat({
             {error && (
               <div
                 style={{
-                  color: "salmon",
+                  color: "var(--danger)",
                   background: "#2a1414",
-                  padding: 8,
-                  borderRadius: 4,
+                  padding: 10,
+                  borderRadius: "var(--radius-md)",
                   border: "1px solid #5a2a2a",
                   whiteSpace: "pre-wrap",
+                  fontSize: "var(--fs-sm)",
+                  fontFamily: "var(--font-mono)",
+                  lineHeight: 1.45,
                 }}
               >
-                <strong>chat failed:</strong>
+                <strong style={{ fontFamily: "var(--font-sans)" }}>
+                  chat failed:
+                </strong>
                 <br />
                 {error}
               </div>
@@ -226,7 +247,17 @@ export function TestChat({
             {response && (
               <div className="ahd-card">
                 <strong>Response:</strong>
-                <pre style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>{response}</pre>
+                <pre
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    marginTop: 8,
+                    fontFamily: "var(--font-sans)",
+                    fontSize: "var(--fs-md)",
+                    lineHeight: 1.55,
+                  }}
+                >
+                  {response}
+                </pre>
               </div>
             )}
           </>

@@ -9,12 +9,14 @@ interface TopoMaybe {
 /**
  * Pick a stable id for a Natural Earth admin-1 feature. Must mirror the
  * server-side logic in scripts/lib/extract-meta.ts so meta and topology join cleanly.
+ * adm1_code is preferred because it's always unique per feature, whereas iso_3166_2
+ * is shared across multi-polygon subdivisions and would cause collisions.
  */
 function pickShapeId(p: Record<string, unknown>, index: number): string {
-  const iso = String(p.iso_3166_2 ?? "");
-  if (iso && iso !== "-99" && iso !== "") return iso;
   const code = String(p.adm1_code ?? "");
   if (code && code !== "-99" && code !== "") return code;
+  const iso = String(p.iso_3166_2 ?? "");
+  if (iso && iso !== "-99" && iso !== "") return iso;
   const gn = String(p.gn_id ?? "");
   if (gn && gn !== "-99" && gn !== "0" && gn !== "") return `gn_${gn}`;
   const a3 = String(p.adm0_a3 ?? "XXX");
@@ -55,11 +57,14 @@ export async function loadMapData(): Promise<MapData> {
     if (!sid) return;
 
     const fromMeta = metaByShapeId.get(sid);
+    const rawMc = Number(raw.mapcolor13 ?? raw.mapcolor9 ?? 1);
+    const mc = Number.isFinite(rawMc) && rawMc >= 1 && rawMc <= 13 ? Math.round(rawMc) : 1;
     const normalized: ProvinceMeta = fromMeta ?? {
       shape_id: sid,
       name: String(raw.name ?? raw.name_en ?? "unknown"),
       iso_country: String(raw.adm0_a3 ?? ""),
       shape_group: String(raw.adm0_a3 ?? ""),
+      map_color: mc,
     };
     f.properties = normalized;
     byShapeId.set(sid, f);

@@ -18,9 +18,9 @@ export function Tabs<K extends string>({
     <div
       style={{
         display: "flex",
-        gap: 4,
-        borderBottom: "1px solid #333",
-        padding: "8px 16px 0",
+        gap: 6,
+        borderBottom: "1px solid var(--border)",
+        padding: "10px 20px 0",
       }}
     >
       {tabs.map((t) => (
@@ -28,18 +28,23 @@ export function Tabs<K extends string>({
           key={t.key}
           onClick={() => onChange(t.key)}
           style={{
-            background: active === t.key ? "#2a2a2a" : "transparent",
-            color: active === t.key ? "#eee" : "#888",
-            border: "1px solid #333",
+            background: active === t.key ? "var(--surface-2)" : "transparent",
+            color: active === t.key ? "var(--fg)" : "var(--fg-muted)",
+            border: "1px solid var(--border)",
             borderBottom:
-              active === t.key ? "1px solid #2a2a2a" : "1px solid #333",
-            padding: "6px 14px",
+              active === t.key
+                ? "1px solid var(--surface-2)"
+                : "1px solid var(--border)",
+            padding: "8px 18px",
             cursor: "pointer",
-            borderTopLeftRadius: 4,
-            borderTopRightRadius: 4,
+            borderTopLeftRadius: 6,
+            borderTopRightRadius: 6,
             marginBottom: -1,
             fontFamily: "inherit",
-            fontSize: "0.9rem",
+            fontSize: "var(--fs-sm)",
+            fontWeight: active === t.key ? 600 : 500,
+            letterSpacing: "-0.005em",
+            transition: "color 120ms ease, background 120ms ease",
           }}
         >
           {t.label}
