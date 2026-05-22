@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod detect;
 pub mod error;
 pub mod ollama;
 pub mod openai;
