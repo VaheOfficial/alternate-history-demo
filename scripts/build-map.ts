@@ -3,21 +3,23 @@ import { downloadCached } from "./lib/download.ts";
 import { simplifyToTopoJson } from "./lib/simplify.ts";
 import { extractMeta } from "./lib/extract-meta.ts";
 
-const GEOBOUNDARIES_ADM1 =
-  "https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM1.geojson";
+// Natural Earth 10m admin_1 (public domain). Hosted via the maintainer's own
+// GitHub repo so the URL is stable.
+const NATURAL_EARTH_ADM1 =
+  "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson";
 
 const CACHE_DIR = "scripts/.cache";
 const PUBLIC_DIR = "public";
-const RETAIN_FRACTION = 0.05; // 5% of original vertices kept
+const RETAIN_FRACTION = 0.08; // 8% — NE is already much simpler than geoBoundaries
 
 async function main() {
   await mkdir(PUBLIC_DIR, { recursive: true });
 
-  const rawPath = `${CACHE_DIR}/geoBoundariesCGAZ_ADM1.geojson`;
+  const rawPath = `${CACHE_DIR}/ne_10m_admin_1_states_provinces.geojson`;
   await downloadCached({
-    url: GEOBOUNDARIES_ADM1,
+    url: NATURAL_EARTH_ADM1,
     destination: rawPath,
-    expectedMinBytes: 50 * 1024 * 1024,
+    expectedMinBytes: 10 * 1024 * 1024,
   });
 
   const { bytes } = await simplifyToTopoJson({

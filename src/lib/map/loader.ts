@@ -6,6 +6,21 @@ interface TopoMaybe {
   objects: Record<string, unknown>;
 }
 
+/**
+ * Pick a stable id for a Natural Earth admin-1 feature. Must mirror the
+ * server-side logic in scripts/lib/extract-meta.ts so meta and topology join cleanly.
+ */
+function pickShapeId(p: Record<string, unknown>, index: number): string {
+  const iso = String(p.iso_3166_2 ?? "");
+  if (iso && iso !== "-99" && iso !== "") return iso;
+  const code = String(p.adm1_code ?? "");
+  if (code && code !== "-99" && code !== "") return code;
+  const gn = String(p.gn_id ?? "");
+  if (gn && gn !== "-99" && gn !== "0" && gn !== "") return `gn_${gn}`;
+  const a3 = String(p.adm0_a3 ?? "XXX");
+  return `${a3}_${index}`;
+}
+
 export async function loadMapData(): Promise<MapData> {
   const [topoResp, metaResp] = await Promise.all([
     fetch("/world.topojson"),
@@ -19,14 +34,11 @@ export async function loadMapData(): Promise<MapData> {
   const topo = (await topoResp.json()) as TopoMaybe;
   const meta = (await metaResp.json()) as MetaFile;
 
-  // Build meta lookup so we can normalize each feature's properties.
   const metaByShapeId = new Map<string, ProvinceMeta>();
   for (const p of meta.provinces) {
     metaByShapeId.set(p.shape_id, p);
   }
 
-  // mapshaper names its output layer after the input filename ('input' here).
-  // Pick whichever object key exists defensively.
   const objKey = Object.keys(topo.objects)[0];
   if (!objKey) throw new Error("topojson has no objects");
 
@@ -37,24 +49,20 @@ export async function loadMapData(): Promise<MapData> {
   const features: ProvinceFeature[] = featureCollection.features;
 
   const byShapeId = new Map<string, ProvinceFeature>();
-  for (const f of features) {
-    // geoBoundaries preserves camelCase property names through mapshaper.
-    // Normalize: prefer the meta file (snake_case) and fall back to whatever
-    // the topojson properties contain.
+  features.forEach((f, i) => {
     const raw = (f.properties as any) ?? {};
-    const sid =
-      String(raw.shape_id ?? raw.shapeID ?? (f as any).id ?? "") || undefined;
-    if (!sid) continue;
+    const sid = pickShapeId(raw, i);
+    if (!sid) return;
 
     const fromMeta = metaByShapeId.get(sid);
     const normalized: ProvinceMeta = fromMeta ?? {
       shape_id: sid,
-      name: String(raw.shapeName ?? raw.name ?? "unknown"),
-      iso_country: String(raw.shapeISO ?? raw.iso_country ?? ""),
-      shape_group: String(raw.shapeGroup ?? raw.shape_group ?? ""),
+      name: String(raw.name ?? raw.name_en ?? "unknown"),
+      iso_country: String(raw.adm0_a3 ?? ""),
+      shape_group: String(raw.adm0_a3 ?? ""),
     };
     f.properties = normalized;
     byShapeId.set(sid, f);
-  }
+  });
   return { byShapeId, features, meta };
 }

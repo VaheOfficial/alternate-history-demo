@@ -184,9 +184,6 @@ export function WorldMap({
       <button onClick={resetView} style={resetButtonStyle}>
         Reset view
       </button>
-      <div style={attributionStyle}>
-        Map data © geoBoundaries CC BY 4.0 · {state.data.meta.count} provinces
-      </div>
     </div>
   );
 }
@@ -205,18 +202,6 @@ const messageStyle: React.CSSProperties = {
   left: "50%",
   transform: "translate(-50%, -50%)",
   color: "#bbb",
-};
-
-const attributionStyle: React.CSSProperties = {
-  position: "absolute",
-  bottom: 4,
-  right: 8,
-  fontSize: "0.7rem",
-  color: "#999",
-  background: "rgba(0,0,0,0.4)",
-  padding: "2px 6px",
-  borderRadius: 3,
-  pointerEvents: "none",
 };
 
 const resetButtonStyle: React.CSSProperties = {

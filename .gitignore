@@ -23,7 +23,5 @@ dist-ssr
 *.sln
 *.sw?
 
-# Plan 03 generated map assets
+# Plan 03 raw map cache (the simplified outputs in public/ ARE committed)
 scripts/.cache/
-public/world.topojson
-public/world-meta.json
