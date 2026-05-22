@@ -1,4 +1,5 @@
 pub mod error;
+pub mod ollama;
 pub mod types;
 
 use async_trait::async_trait;
