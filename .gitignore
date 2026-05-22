@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Plan 03 generated map assets
+scripts/.cache/
+public/world.topojson
+public/world-meta.json

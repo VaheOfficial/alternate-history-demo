@@ -7,20 +7,29 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "map:build": "tsx scripts/build-map.ts",
+    "map:clean": "node -e \"const fs=require('fs'); for (const f of ['public/world.topojson','public/world-meta.json']) try { fs.unlinkSync(f) } catch {}\""
   },
   "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "d3-geo": "^3.1.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "topojson-client": "^3.1.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/d3-geo": "^3.1.0",
+    "@types/geojson": "^7946.0.16",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "@types/topojson-client": "^3.1.5",
     "@vitejs/plugin-react": "^4.6.0",
+    "mapshaper": "^0.7.19",
+    "tsx": "^4.22.3",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4",
-    "@tauri-apps/cli": "^2"
+    "vite": "^7.0.4"
   }
 }
