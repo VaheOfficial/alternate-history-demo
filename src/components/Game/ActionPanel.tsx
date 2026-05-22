@@ -1,48 +1,40 @@
 import { useEffect, useState } from "react";
-import { listProviderConfigs, listModels } from "../../lib/tauri";
+import { listModels } from "../../lib/tauri";
 import type { ProviderConfig, ModelInfo } from "../../lib/types";
 import { validateAction, type ValidatorResult } from "../../lib/game/tauri";
 import type { World } from "../../lib/game/types";
 
 export function ActionPanel({
   world,
+  providers,
+  providerId,
+  model,
+  onProviderChange,
+  onModelChange,
   onResult,
 }: {
   world: World;
+  providers: ProviderConfig[];
+  providerId: string;
+  model: string;
+  onProviderChange: (id: string) => void;
+  onModelChange: (model: string) => void;
   onResult: (r: ValidatorResult) => void;
 }) {
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [providerId, setProviderId] = useState<string>("");
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [model, setModel] = useState<string>("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<ValidatorResult | null>(null);
 
   useEffect(() => {
-    listProviderConfigs().then((ps) => {
-      setProviders(ps);
-      if (ps.length && !providerId) setProviderId(ps[0].id);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
     if (!providerId) {
       setModels([]);
-      setModel("");
       return;
     }
     listModels(providerId)
-      .then((m) => {
-        setModels(m);
-        if (m.length) setModel(m[0].id);
-      })
-      .catch(() => {
-        setModels([]);
-        setModel("");
-      });
+      .then((m) => setModels(m))
+      .catch(() => setModels([]));
   }, [providerId]);
 
   const handleSend = async () => {
@@ -83,7 +75,7 @@ export function ActionPanel({
           <div style={selectorRow}>
             <select
               value={providerId}
-              onChange={(e) => setProviderId(e.target.value)}
+              onChange={(e) => onProviderChange(e.target.value)}
               className="ahd-select"
               style={miniSelectStyle}
               disabled={busy}
@@ -96,7 +88,7 @@ export function ActionPanel({
             </select>
             <select
               value={model}
-              onChange={(e) => setModel(e.target.value)}
+              onChange={(e) => onModelChange(e.target.value)}
               className="ahd-select"
               style={miniSelectStyle}
               disabled={busy || models.length === 0}

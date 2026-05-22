@@ -59,3 +59,40 @@ export function validateAction(
     playerText,
   });
 }
+
+export interface OrchestratorPick {
+  iso: string;
+  reason: string;
+}
+
+export interface NationTurn {
+  iso: string;
+  nation_name: string;
+  narrative: string;
+  applied: unknown[];
+  failures: string[];
+  goal_update: string[] | null;
+  raw_response: string;
+}
+
+export interface NpcTurnResult {
+  orchestrator_picks: OrchestratorPick[];
+  nation_turns: NationTurn[];
+  world: World;
+}
+
+export function runNpcTurn(
+  providerId: string,
+  model: string,
+  world: World,
+  days: number,
+  maxActors?: number,
+) {
+  return invoke<NpcTurnResult>("run_npc_turn_cmd", {
+    providerId,
+    model,
+    world,
+    days,
+    maxActors: maxActors ?? null,
+  });
+}

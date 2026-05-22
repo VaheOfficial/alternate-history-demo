@@ -1,13 +1,23 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WorldMap, type ProvinceHoverInfo } from "../Map/WorldMap";
 import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors";
-import type { World } from "../../lib/game/types";
-import { endTurn, type ValidatorResult } from "../../lib/game/tauri";
+import type { Nation, World } from "../../lib/game/types";
+import {
+  endTurn,
+  runNpcTurn,
+  type NationTurn,
+  type NpcTurnResult,
+  type OrchestratorPick,
+  type ValidatorResult,
+} from "../../lib/game/tauri";
+import { listProviderConfigs, listModels } from "../../lib/tauri";
+import type { ProviderConfig } from "../../lib/types";
 import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
 import { TurnControls } from "./TurnControls";
 import { ActionPanel } from "./ActionPanel";
 import { SavesDrawer } from "./SavesDrawer";
+import { TurnSummaryModal, type EconomyDelta } from "./TurnSummaryModal";
 import { colorForMapcolor } from "../../lib/map/renderer";
 
 export function GameSession({
@@ -26,13 +36,52 @@ export function GameSession({
   const [showSaves, setShowSaves] = useState(false);
   const [turnError, setTurnError] = useState<string | null>(null);
 
+  // Provider/model owned at the session level so both the player ActionPanel
+  // AND the End-Turn NPC turn flow share one selection.
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [providerId, setProviderId] = useState<string>("");
+  const [model, setModel] = useState<string>("");
+  const lastSummaryRef = useRef<{
+    picks: OrchestratorPick[];
+    nation_turns: NationTurn[];
+    new_date: string;
+    days: number;
+    economy_delta: EconomyDelta | null;
+    npc_error: string | null;
+  } | null>(null);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+
+  useEffect(() => {
+    listProviderConfigs().then((ps) => {
+      setProviders(ps);
+      if (ps.length > 0) setProviderId((cur) => (cur ? cur : ps[0].id));
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!providerId) {
+      setModel("");
+      return;
+    }
+    listModels(providerId)
+      .then((m) => {
+        if (m.length === 0) {
+          setModel("");
+          return;
+        }
+        setModel((cur) => {
+          if (cur && m.some((mm) => mm.id === cur)) return cur;
+          return m[0].id;
+        });
+      })
+      .catch(() => setModel(""));
+  }, [providerId]);
+
   const ownershipColors = useMemo(
     () => buildOwnershipColors(world, { selectedShape }),
     [world, selectedShape],
   );
 
-  // Per-country highlight is driven by ISO3 — the WorldMap looks up the
-  // pre-built country outline polygon and strokes it directly.
   const playerIso = useMemo(() => {
     if (!world.player_nation) return null;
     return (
@@ -66,13 +115,58 @@ export function GameSession({
     setSelectedShape(null);
   };
 
+  const computeEconomyDelta = useCallback(
+    (before: World, after: World): EconomyDelta | null => {
+      if (!before.player_nation) return null;
+      const a = before.nations.find((n) => n.id === before.player_nation);
+      const b = after.nations.find((n) => n.id === before.player_nation);
+      if (!a || !b) return null;
+      return {
+        treasury: b.treasury - a.treasury,
+        manpower: b.manpower_pool - a.manpower_pool,
+        stability: b.stability - a.stability,
+        war_support: b.war_support - a.war_support,
+      };
+    },
+    [],
+  );
+
   const handleEndTurn = async (days: number) => {
     setBusy(true);
     setTurnError(null);
+    const before = world;
     try {
-      const next = await endTurn(world, days);
-      setWorld(next);
+      // Step 1: deterministic clock + economy.
+      const afterEconomy = await endTurn(before, days);
+      const delta = computeEconomyDelta(before, afterEconomy);
+
+      // Step 2: NPC turn (LLM-orchestrated). Best-effort; if it fails we still
+      // surface the economy delta.
+      let npc: NpcTurnResult | null = null;
+      let npcError: string | null = null;
+      if (providerId && model) {
+        try {
+          npc = await runNpcTurn(providerId, model, afterEconomy, days);
+        } catch (e) {
+          npcError = String(e);
+        }
+      } else {
+        npcError = "No LLM provider configured — NPC turn skipped.";
+      }
+
+      const finalWorld = npc?.world ?? afterEconomy;
+      setWorld(finalWorld);
       setPacingHint(null);
+
+      lastSummaryRef.current = {
+        picks: npc?.orchestrator_picks ?? [],
+        nation_turns: npc?.nation_turns ?? [],
+        new_date: finalWorld.clock.current_date,
+        days,
+        economy_delta: delta,
+        npc_error: npcError,
+      };
+      setSummaryOpen(true);
     } catch (e) {
       setTurnError(String(e));
     } finally {
@@ -81,8 +175,6 @@ export function GameSession({
   };
 
   const handleValidatorResult = (r: ValidatorResult) => {
-    // The backend already applied any accepted actions + saved a snapshot.
-    // Reflect the new world locally and pick up the AI's pacing suggestion.
     if (r.accepted) setWorld(r.world);
     if (r.next_tick_days != null) setPacingHint(r.next_tick_days);
   };
@@ -90,6 +182,12 @@ export function GameSession({
   const playerNation = world.player_nation
     ? world.nations.find((n) => n.id === world.player_nation) ?? null
     : null;
+
+  const nationsByIso = useMemo(() => {
+    const m = new Map<string, Nation>();
+    for (const n of world.nations) m.set(n.iso_a3, n);
+    return m;
+  }, [world.nations]);
 
   return (
     <div style={containerStyle}>
@@ -125,7 +223,15 @@ export function GameSession({
             y={hover.clientY}
           />
         )}
-        <ActionPanel world={world} onResult={handleValidatorResult} />
+        <ActionPanel
+          world={world}
+          providers={providers}
+          providerId={providerId}
+          model={model}
+          onProviderChange={setProviderId}
+          onModelChange={setModel}
+          onResult={handleValidatorResult}
+        />
         {selectedNation && (
           <CountryDrawer
             world={world}
@@ -141,6 +247,23 @@ export function GameSession({
               setShowSaves(false);
             }}
             onClose={() => setShowSaves(false)}
+          />
+        )}
+        {summaryOpen && lastSummaryRef.current && (
+          <TurnSummaryModal
+            playerNation={playerNation}
+            economyDelta={lastSummaryRef.current.economy_delta}
+            picks={lastSummaryRef.current.picks}
+            nationTurns={lastSummaryRef.current.nation_turns}
+            newDate={lastSummaryRef.current.new_date}
+            daysElapsed={lastSummaryRef.current.days}
+            worldByIso={nationsByIso}
+            npcError={lastSummaryRef.current.npc_error}
+            onClose={() => setSummaryOpen(false)}
+            onFocusNation={(nationId) => {
+              setSelectedNation(nationId);
+              setSummaryOpen(false);
+            }}
           />
         )}
       </div>

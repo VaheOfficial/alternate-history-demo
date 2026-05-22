@@ -6,8 +6,10 @@
 
 pub mod apply;
 pub mod economy;
+pub mod npc_turn;
 pub mod tick;
 
 pub use apply::{apply_actions, ApplyOutcome};
 pub use economy::run_economy_tick;
+pub use npc_turn::{run_npc_turn, NationTurn, NpcTurnResult, OrchestratorPick};
 pub use tick::advance_clock;

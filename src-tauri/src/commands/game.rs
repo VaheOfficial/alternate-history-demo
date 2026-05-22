@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::engine::{advance_clock, apply_actions, run_economy_tick, ApplyOutcome};
+use crate::engine::{
+    advance_clock, apply_actions, run_economy_tick, run_npc_turn, ApplyOutcome,
+    NpcTurnResult,
+};
 use crate::error::{AppError, Result};
 use crate::providers::types::{ChatMessage, ChatRequest, Role};
 use crate::saves::snapshot::save_snapshot;
@@ -20,6 +23,31 @@ pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     run_economy_tick(&mut advanced, days.max(1));
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
+}
+
+/// Run the NPC turn — the LLM picks 3–6 relevant nations to act, then each
+/// generates its own narrative + typed actions. Results are applied via the
+/// engine and a fresh snapshot is persisted.
+#[tauri::command]
+pub async fn run_npc_turn_cmd(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+    model: String,
+    world: World,
+    days: i64,
+    max_actors: Option<usize>,
+) -> Result<NpcTurnResult> {
+    let provider = state
+        .registry
+        .get(provider_id)
+        .await
+        .ok_or_else(|| AppError::NotFound("provider".into()))?;
+    let max = max_actors.unwrap_or(4);
+    let result = run_npc_turn(provider, model, world, days, max)
+        .await
+        .map_err(|e| AppError::InvalidArgument(e))?;
+    let _ = save_snapshot(result.world.clone()).await;
+    Ok(result)
 }
 
 // ─── Action validator (LLM) ─────────────────────────────────────────────────

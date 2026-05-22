@@ -87,6 +87,67 @@ fn government_for(iso: &str) -> GovernmentType {
     }
 }
 
+/// Static goal seeds for the major nations. Anything not listed gets a
+/// generic "preserve sovereignty and trade" — the LLM refines as a nation
+/// acts. Goals are short, action-oriented, deliberately a bit opinionated
+/// so the world has flavor on day one.
+fn goals_for(iso: &str) -> Vec<String> {
+    let preset: &[(&str, &[&str])] = &[
+        ("USA", &["maintain global naval supremacy", "contain authoritarian blocs", "secure energy and chip supply chains"]),
+        ("CHN", &["reunify Taiwan on Chinese terms", "expand BRI influence in the Global South", "dominate semiconductor & EV markets"]),
+        ("RUS", &["restore sphere of influence over post-Soviet space", "weaken NATO cohesion", "secure Arctic resource claims"]),
+        ("GBR", &["preserve special relationship with USA", "lead European security outside EU", "project naval power east of Suez"]),
+        ("FRA", &["lead a strategically autonomous EU", "stabilize the Sahel", "maintain Pacific presence via overseas territories"]),
+        ("DEU", &["anchor EU industrial policy", "transition energy away from fossil fuels", "rebuild deterrent military credibility"]),
+        ("IND", &["counter Chinese assertiveness in the Indo-Pacific", "modernize the military", "lead the Global South diplomatically"]),
+        ("JPN", &["counter Chinese & North Korean threats", "deepen US alliance", "secure undersea cable + semiconductor flow"]),
+        ("KOR", &["deter North Korean aggression", "diversify supply chains away from China", "expand soft-power reach"]),
+        ("PRK", &["preserve regime survival", "extract aid via brinkmanship", "complete tactical nuclear arsenal"]),
+        ("TUR", &["lead Sunni Muslim diplomacy", "control Eastern Mediterranean energy routes", "balance Russia and NATO"]),
+        ("IRN", &["expand axis of resistance influence", "achieve nuclear threshold capability", "evade sanctions through China & Russia"]),
+        ("ISR", &["degrade Iran-aligned militias", "expand Abraham-Accords normalization", "secure Negev tech corridor"]),
+        ("SAU", &["lead Sunni Arab world", "diversify economy beyond oil", "balance USA and China"]),
+        ("ARE", &["become regional logistics + finance hub", "diversify beyond hydrocarbons", "play balanced great-power game"]),
+        ("EGY", &["preserve Suez Canal revenue", "stabilize the south (Sudan, Libya)", "manage Nile water security with Ethiopia"]),
+        ("PAK", &["maintain nuclear parity with India", "navigate China-US balance", "stabilize border regions"]),
+        ("UKR", &["reclaim full sovereignty over occupied territory", "secure EU+NATO accession path", "rebuild war-shattered economy"]),
+        ("POL", &["lead Eastern NATO frontier defense", "build largest European land army", "decouple from Russian energy"]),
+        ("AUS", &["counter Chinese influence in Pacific", "deepen AUKUS submarine program", "secure critical-minerals trade"]),
+        ("BRA", &["lead South American bloc", "balance USA-China without alignment", "preserve Amazon while developing economy"]),
+        ("MEX", &["manage USA migration politics", "modernize industry via nearshoring", "contain cartel violence"]),
+        ("CAN", &["assert Arctic sovereignty", "diversify trade beyond USA", "lead on critical minerals supply"]),
+        ("ITA", &["lead Mediterranean migration diplomacy", "anchor Southern EU", "maintain influence in Libya & Horn of Africa"]),
+        ("ESP", &["lead EU Mediterranean policy", "anchor Latin-American ties", "secure renewable-energy transition"]),
+        ("NLD", &["lead EU trade + semiconductor policy", "host international rules-based institutions"]),
+        ("SWE", &["lock in NATO membership benefits", "strengthen Baltic defense"]),
+        ("FIN", &["secure long Russian border", "deepen Nordic-Baltic defense integration"]),
+        ("NOR", &["lead Arctic & North Atlantic security", "manage energy export politics"]),
+        ("CHE", &["preserve armed neutrality", "remain global financial hub"]),
+        ("ZAF", &["lead African Union diplomacy", "preserve BRICS leverage", "manage post-load-shedding economy"]),
+        ("NGA", &["lead West African security", "diversify beyond oil", "contain insurgencies in north"]),
+        ("ETH", &["assert regional hegemony", "complete GERD dam politics with Egypt", "recover from internal conflicts"]),
+        ("ARG", &["stabilize chronic inflation", "monetize Vaca Muerta + lithium", "deepen Mercosur"]),
+        ("CHL", &["preserve copper + lithium leverage", "navigate Pacific trade politics"]),
+        ("VNM", &["balance USA-China to preserve sovereignty", "climb electronics manufacturing ladder"]),
+        ("PHL", &["counter Chinese South-China-Sea claims", "deepen US alliance", "secure West Philippine Sea"]),
+        ("IDN", &["lead ASEAN diplomatic centrality", "navigate USA-China without alignment"]),
+        ("THA", &["balance USA-China", "preserve monarchy + political stability"]),
+        ("BLR", &["preserve regime survival via Russian backing"]),
+        ("KAZ", &["balance Russia & China", "diversify pipeline routes westward"]),
+        ("VEN", &["preserve regime", "monetize oil reserves through China + Russia"]),
+        ("CUB", &["preserve revolutionary continuity", "navigate USA pressure"]),
+    ];
+    for (key, goals) in preset {
+        if *key == iso {
+            return goals.iter().map(|s| s.to_string()).collect();
+        }
+    }
+    vec![
+        "preserve sovereignty and territorial integrity".into(),
+        "grow the economy and stabilize society".into(),
+    ]
+}
+
 /// Coarse doctrine pick — large land powers default to Mass Assault, naval /
 /// island states to Defense in Depth, technologically advanced western nations
 /// to Mobile Warfare, everyone else to Superior Firepower. Refinable later.
@@ -209,6 +270,7 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
             map_color,
             relations: HashMap::new(),
             build_queue: Vec::new(),
+            goals: goals_for(iso),
         });
 
         nation_by_iso.insert(iso.clone(), nation_id);

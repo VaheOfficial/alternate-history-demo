@@ -59,6 +59,7 @@ export interface Nation {
   map_color: number;
   relations: Record<string, number>;
   build_queue: unknown[];
+  goals: string[];
 }
 
 export interface ResourceYield {

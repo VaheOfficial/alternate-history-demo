@@ -125,6 +125,12 @@ pub struct Nation {
 
     #[serde(default)]
     pub build_queue: Vec<BuildOrder>,
+
+    /// Short text directives the nation pursues — feeds the NPC actor prompt
+    /// so each LLM call gets that nation's voice + intent. Evolves over time
+    /// as the LLM updates them through `NationTurn.goal_update`.
+    #[serde(default)]
+    pub goals: Vec<String>,
 }
 
 fn default_map_color() -> u8 {
@@ -158,6 +164,7 @@ mod tests {
             map_color: 1,
             relations: HashMap::new(),
             build_queue: Vec::new(),
+            goals: vec!["test goal".into()],
         };
         let json = serde_json::to_string(&n).unwrap();
         let back: Nation = serde_json::from_str(&json).unwrap();
