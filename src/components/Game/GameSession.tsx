@@ -6,6 +6,7 @@ import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors
 import { computeVisibility } from "../../lib/game/visibility";
 import type { Nation, World } from "../../lib/game/types";
 import {
+  createBattlePlan,
   endTurn,
   moveUnit,
   runNpcTurn,
@@ -16,6 +17,7 @@ import {
 import { listProviderConfigs, listModels } from "../../lib/tauri";
 import type { ProviderConfig } from "../../lib/types";
 import { AdvisorPanel } from "./AdvisorPanel";
+import { BattlePlansPanel } from "./BattlePlansPanel";
 import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
 import { OrderQueuePanel } from "./OrderQueuePanel";
@@ -143,18 +145,16 @@ export function GameSession({
     return [...groups.values()];
   }, [hoveredProvince, world.units, world.nations]);
 
-  // Shift+click movement workflow:
-  //   1. Shift+click a province that contains your divisions → selects it.
-  //      The next non-shift click anywhere clears the selection; the next
-  //      shift+click on an ADJACENT province with the selection set moves
-  //      every player division from source to target.
-  //   2. Plain click still opens the CountryDrawer for the owning nation,
-  //      so non-movement workflows are unchanged.
-  const [moveSource, setMoveSource] = useState<{
-    shapeId: string;
-    provinceId: string;
-    unitCount: number;
-  } | null>(null);
+  // Plan 10 battle-plan selection workflow:
+  //   1. Shift+click a friendly province with units → add it to the
+  //      source selection (toggle off if already selected). Multiple
+  //      sources allowed; the in-progress draft shows on the map.
+  //   2. Right-click any province → create a BattlePlan from the
+  //      selected sources to that target. Clear the draft.
+  //   3. Escape or plain click → clear the draft.
+  //   4. Once a plan exists, the Plans tab in the dock executes / cancels
+  //      it. Execute moves units one hop along the adjacency graph.
+  const [planSources, setPlanSources] = useState<Set<string>>(new Set());
   const [adjacency, setAdjacency] = useState<Record<string, string[]> | null>(null);
   const [moveStatus, setMoveStatus] = useState<string | null>(null);
 
@@ -192,16 +192,21 @@ export function GameSession({
     return computeVisibility(world, adjacency);
   }, [world, adjacency]);
 
+  // Reference moveUnit so the import stays "used" — we keep the binding
+  // because the validator path can still emit MoveUnit actions even though
+  // the player UI now goes through battle plans.
+  void moveUnit;
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && moveSource) {
-        setMoveSource(null);
-        setMoveStatus("Movement cancelled.");
+      if (e.key === "Escape" && planSources.size > 0) {
+        setPlanSources(new Set());
+        setMoveStatus("Battle plan draft cleared.");
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [moveSource]);
+  }, [planSources]);
 
   const handleClick = async (
     shape_id: string,
@@ -214,80 +219,84 @@ export function GameSession({
       const friendlyUnits = world.units.filter(
         (u) => u.location === p.id && u.owner === world.player_nation,
       );
-      if (!moveSource) {
-        // First shift+click: must have player units in this province.
-        if (friendlyUnits.length === 0) {
+      if (friendlyUnits.length === 0 && !planSources.has(shape_id)) {
+        setMoveStatus(
+          `${p.name} has no friendly divisions. Shift-click a province with your units.`,
+        );
+        return;
+      }
+      setPlanSources((prev) => {
+        const next = new Set(prev);
+        if (next.has(shape_id)) {
+          next.delete(shape_id);
           setMoveStatus(
-            `${p.name} has no friendly divisions to move. Shift-click a province with your units first.`,
+            next.size === 0
+              ? "Battle plan draft cleared."
+              : `Deselected ${p.name}. ${next.size} source(s) still selected.`,
           );
-          return;
-        }
-        setMoveSource({
-          shapeId: shape_id,
-          provinceId: p.id,
-          unitCount: friendlyUnits.length,
-        });
-        setMoveStatus(
-          `Selected ${friendlyUnits.length} division(s) in ${p.name}. Shift-click an adjacent province to move.`,
-        );
-        return;
-      }
-      // Second shift+click: validate adjacency, then move every player unit.
-      if (moveSource.shapeId === shape_id) {
-        setMoveSource(null);
-        setMoveStatus("Movement cancelled.");
-        return;
-      }
-      const adj = adjacency?.[moveSource.shapeId] ?? [];
-      if (!adj.includes(shape_id)) {
-        setMoveStatus(
-          `${p.name} is not adjacent to the source. Pick a neighbouring province (highlighted on the map).`,
-        );
-        return;
-      }
-      const movingUnits = world.units.filter(
-        (u) =>
-          u.location === moveSource.provinceId &&
-          u.owner === world.player_nation,
-      );
-      if (movingUnits.length === 0) {
-        setMoveSource(null);
-        return;
-      }
-      setMoveStatus(`Moving ${movingUnits.length} division(s) to ${p.name}…`);
-      let workingWorld = world;
-      let lastOutcome = "";
-      for (const u of movingUnits) {
-        try {
-          const r = await moveUnit(
-            workingWorld,
-            u.id,
-            p.id,
-            adjacency ?? {},
+        } else {
+          next.add(shape_id);
+          setMoveStatus(
+            `${next.size} source province${next.size === 1 ? "" : "s"} selected — right-click any province on the map to set the target.`,
           );
-          workingWorld = r.world;
-          lastOutcome = r.outcome.outcome;
-        } catch (e) {
-          setMoveStatus(`Move failed: ${String(e)}`);
-          setMoveSource(null);
-          return;
         }
-      }
-      setWorld(workingWorld);
-      setMoveSource(null);
-      setMoveStatus(
-        `${movingUnits.length} division(s) arrived in ${p.name} (${lastOutcome}).`,
-      );
+        return next;
+      });
       return;
     }
 
-    // Plain click → cancel any pending move and open the country drawer.
-    if (moveSource) {
-      setMoveSource(null);
+    // Plain click → clear any draft and open the country drawer.
+    if (planSources.size > 0) {
+      setPlanSources(new Set());
       setMoveStatus(null);
     }
     setSelectedNation(p.owner);
     setSelectedShape(shape_id);
+  };
+
+  // Right-click on a province while a draft selection exists → create a
+  // battle plan.
+  const handleRightClick = async (shape_id: string) => {
+    if (!world.player_nation) return;
+    if (planSources.size === 0) {
+      setMoveStatus(
+        "Shift-click friendly provinces first to set sources, THEN right-click to set the target.",
+      );
+      return;
+    }
+    const target = findProvinceByShape(world, shape_id);
+    if (!target) return;
+    if (planSources.has(shape_id)) {
+      setMoveStatus(
+        "Target can't be one of the sources. Right-click a different province.",
+      );
+      return;
+    }
+    // Resolve source shape_ids → province ids.
+    const sources: string[] = [];
+    for (const sid of planSources) {
+      const sp = findProvinceByShape(world, sid);
+      if (sp) sources.push(sp.id);
+    }
+    if (sources.length === 0) return;
+    setMoveStatus(`Drafting battle plan to ${target.name}…`);
+    try {
+      const newWorld = await createBattlePlan(world, {
+        owner: world.player_nation,
+        target: target.id,
+        sources,
+      });
+      setWorld(newWorld);
+      setPlanSources(new Set());
+      setMoveStatus(
+        `Battle plan drawn: ${sources.length} source${sources.length === 1 ? "" : "s"} → ${target.name}. Open the Plans tab to execute.`,
+      );
+      // Auto-switch to Plans tab so the player sees the new plan.
+      setActiveTab("plans");
+      if (dockCollapsed) setDockCollapsed(false);
+    } catch (e) {
+      setMoveStatus(`Could not create plan: ${String(e)}`);
+    }
   };
 
   const handleCloseDrawer = () => {
@@ -383,6 +392,45 @@ export function GameSession({
     return m;
   }, [mapData]);
 
+  // Plan 10: arrows drawn on the map. Two sources of arrows:
+  //   - Active world.battle_plans owned by the player (status != cancelled).
+  //   - The in-progress draft (planSources → not yet finalized) is NOT
+  //     drawn as arrows here because there's no target yet; the status
+  //     banner shows it instead.
+  const planArrows = useMemo(() => {
+    if (!world.player_nation) return [];
+    const provinceById = new Map(world.provinces.map((p) => [p.id, p]));
+    const out: Array<{
+      sourceLon: number;
+      sourceLat: number;
+      targetLon: number;
+      targetLat: number;
+      color: string;
+    }> = [];
+    for (const plan of world.battle_plans ?? []) {
+      if (plan.owner !== world.player_nation) continue;
+      if (plan.status === "cancelled") continue;
+      const target = provinceById.get(plan.target);
+      if (!target) continue;
+      const tc = provinceCentroids.get(target.geometry_ref);
+      if (!tc) continue;
+      for (const sid of plan.sources) {
+        const src = provinceById.get(sid);
+        if (!src) continue;
+        const sc = provinceCentroids.get(src.geometry_ref);
+        if (!sc) continue;
+        out.push({
+          sourceLon: sc[0],
+          sourceLat: sc[1],
+          targetLon: tc[0],
+          targetLat: tc[1],
+          color: plan.status === "executed" ? "#7aa2f7" : "#f5d76e",
+        });
+      }
+    }
+    return out;
+  }, [world.battle_plans, world.player_nation, world.provinces, provinceCentroids]);
+
   const unitStacks = useMemo(() => {
     if (!world.units || world.units.length === 0) return [];
     const byProvince = new Map<
@@ -472,6 +520,18 @@ export function GameSession({
         onWorldUpdate={setWorld}
       />
     ),
+    plans: (
+      <BattlePlansPanel
+        world={world}
+        adjacency={adjacency}
+        onWorldUpdate={setWorld}
+        draftSourceCount={planSources.size}
+        onClearDraft={() => {
+          setPlanSources(new Set());
+          setMoveStatus("Battle plan draft cleared.");
+        }}
+      />
+    ),
     saves: <SavesPanel world={world} onLoaded={setWorld} />,
     history: <HistoryPanel world={world} />,
   } satisfies Record<DockTab, React.ReactNode>;
@@ -499,6 +559,8 @@ export function GameSession({
           selectedIso={selectedIso}
           ownedByIso={ownedByIso}
           visibleProvinces={visibility.visibleProvinces}
+          planArrows={planArrows}
+          onProvinceRightClick={handleRightClick}
           onProvinceHover={setHover}
           onProvinceClick={handleClick}
           unitStacks={unitStacks}
@@ -511,29 +573,31 @@ export function GameSession({
               top: 14,
               left: "50%",
               transform: "translateX(-50%)",
-              background: moveSource
-                ? "rgba(122,162,247,0.92)"
-                : "rgba(15, 17, 21, 0.92)",
-              color: moveSource ? "#0c1322" : "var(--fg)",
+              background:
+                planSources.size > 0
+                  ? "rgba(245,215,110,0.92)"
+                  : "rgba(15, 17, 21, 0.92)",
+              color:
+                planSources.size > 0 ? "#0c1322" : "var(--fg)",
               border: "1px solid var(--border-strong)",
               borderRadius: "var(--radius-md)",
               padding: "8px 14px",
               fontSize: "var(--fs-sm)",
               fontWeight: 600,
               zIndex: 8,
-              maxWidth: 560,
+              maxWidth: 620,
               backdropFilter: "blur(8px)",
               WebkitBackdropFilter: "blur(8px)",
               cursor: "pointer",
             }}
             onClick={() => {
-              setMoveSource(null);
+              setPlanSources(new Set());
               setMoveStatus(null);
             }}
             title="Click to dismiss"
           >
             {moveStatus}
-            {moveSource && (
+            {planSources.size > 0 && (
               <span style={{ marginLeft: 12, fontWeight: 500, opacity: 0.85 }}>
                 (Esc or click here to cancel)
               </span>

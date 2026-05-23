@@ -5,9 +5,10 @@ import {
   BookIcon,
   ChevronDownIcon,
   GearIcon,
+  HammerIcon,
 } from "../ui/Icon";
 
-export type DockTab = "orders" | "advisor" | "saves" | "history";
+export type DockTab = "orders" | "advisor" | "plans" | "saves" | "history";
 
 export function CommandDock({
   active,
@@ -28,6 +29,7 @@ export function CommandDock({
   const tabs: Array<{ key: DockTab; label: string; icon: ReactNode }> = [
     { key: "orders", label: "Orders", icon: <ScrollIcon /> },
     { key: "advisor", label: "Advisor", icon: <GearIcon /> },
+    { key: "plans", label: "Plans", icon: <HammerIcon /> },
     { key: "saves", label: "Saves", icon: <DiskIcon /> },
     { key: "history", label: "History", icon: <BookIcon /> },
   ];

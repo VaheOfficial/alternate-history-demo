@@ -201,3 +201,44 @@ export function requestAdvisor(
     world,
   });
 }
+
+// ─── Battle plans (Plan 10) ────────────────────────────────────────────────
+
+export interface CreateBattlePlanRequest {
+  owner: string;
+  target: string;
+  sources: string[];
+}
+
+export interface BattlePlanStep {
+  source: string;
+  hop_target: string | null;
+  units_moved: number;
+  outcome: MovementOutcome;
+  note: string | null;
+}
+
+export interface BattlePlanExecuteResult {
+  world: World;
+  steps: BattlePlanStep[];
+}
+
+export function createBattlePlan(world: World, request: CreateBattlePlanRequest) {
+  return invoke<World>("create_battle_plan_cmd", { world, request });
+}
+
+export function cancelBattlePlan(world: World, planId: string) {
+  return invoke<World>("cancel_battle_plan_cmd", { world, planId });
+}
+
+export function executeBattlePlan(
+  world: World,
+  planId: string,
+  adjacency: Record<string, string[]>,
+) {
+  return invoke<BattlePlanExecuteResult>("execute_battle_plan_cmd", {
+    world,
+    planId,
+    adjacency,
+  });
+}

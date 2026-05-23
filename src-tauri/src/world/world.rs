@@ -1,6 +1,7 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use super::battle_plan::BattlePlan;
 use super::clock::GameClock;
 use super::crisis::Crisis;
 use super::event::Event;
@@ -32,6 +33,10 @@ pub struct World {
     /// projects, mega-construction) — engine ticks them each end-turn.
     #[serde(default)]
     pub pending: Vec<PendingAction>,
+    /// HOI4-style player-drawn movement plans. See
+    /// `world::battle_plan::BattlePlan` and Plan 10.
+    #[serde(default)]
+    pub battle_plans: Vec<BattlePlan>,
 }
 
 impl World {
@@ -53,6 +58,7 @@ impl World {
             frontlines: vec![],
             events: vec![],
             pending: vec![],
+            battle_plans: vec![],
         }
     }
 }

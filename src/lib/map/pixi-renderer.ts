@@ -67,6 +67,8 @@ export interface SceneHandles {
   countryLabelContainer: Container;
   /** Sibling container on the stage — unit icons (above cities). */
   unitContainer: Container;
+  /** Sibling container on the stage — battle-plan arrow polylines. */
+  planArrowsContainer: Container;
   destroy(): void;
 }
 
@@ -127,6 +129,13 @@ export async function createPixiScene(
   unitContainer.eventMode = "none";
   app.stage.addChild(unitContainer);
 
+  // Battle-plan arrows (Plan 10): live on the STAGE so stroke width stays
+  // constant in screen pixels at any zoom. Sits above units so arrows are
+  // never visually under stack circles.
+  const planArrowsContainer = new Container();
+  planArrowsContainer.eventMode = "none";
+  app.stage.addChild(planArrowsContainer);
+
   return {
     app,
     mapContainer,
@@ -138,6 +147,7 @@ export async function createPixiScene(
     cityContainer,
     countryLabelContainer,
     unitContainer,
+    planArrowsContainer,
     destroy() {
       try {
         app.destroy({ removeView: true }, { children: true, texture: true });
@@ -1282,3 +1292,127 @@ export function updateUnits(
 }
 
 export { worldExtentAtBase };
+
+// ─── Battle-plan arrows (Plan 10) ──────────────────────────────────────────
+
+export interface PlanArrowInput {
+  /** Geographic anchor [lon, lat] of the source province. */
+  sourceLon: number;
+  sourceLat: number;
+  /** Geographic anchor [lon, lat] of the target province. */
+  targetLon: number;
+  targetLat: number;
+  /** Hex color, e.g. "#f5d76e". */
+  color: string;
+}
+
+interface PreparedArrow {
+  /** Endpoint coords in world-pixel space (zoom 1, pre-pan). */
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  color: number;
+}
+
+export interface PlanArrowsLayer {
+  container: Container;
+  prepared: PreparedArrow[];
+  graphics: Graphics;
+}
+
+export function createPlanArrowsLayer(container: Container): PlanArrowsLayer {
+  const g = new Graphics();
+  container.addChild(g);
+  return { container, prepared: [], graphics: g };
+}
+
+/**
+ * Project plan-arrow endpoints into world-pixel space and store. Per-frame
+ * redraw happens in updatePlanArrows.
+ */
+export function buildPlanArrows(
+  layer: PlanArrowsLayer,
+  width: number,
+  height: number,
+  arrows: PlanArrowInput[],
+): void {
+  const projection = geoEquirectangular()
+    .scale(width / (2 * Math.PI))
+    .translate([width / 2, height / 2])
+    .rotate([0, 0])
+    .center([0, 0]);
+  layer.prepared = arrows
+    .map((a) => {
+      const ps = projection([a.sourceLon, a.sourceLat]);
+      const pt = projection([a.targetLon, a.targetLat]);
+      if (!ps || !pt) return null;
+      return {
+        x0: ps[0],
+        y0: ps[1],
+        x1: pt[0],
+        y1: pt[1],
+        color: hexToInt(a.color).rgb,
+      };
+    })
+    .filter((v): v is PreparedArrow => v !== null);
+}
+
+/**
+ * Redraw the arrows for the current view. Stroke width stays at ~2.5
+ * screen-px regardless of zoom (so deep zooms don't show a 30px solid
+ * blob across the map). Each arrow is a straight polyline plus a small
+ * filled triangle arrowhead at the target end.
+ */
+export function updatePlanArrows(
+  layer: PlanArrowsLayer,
+  view: { panX: number; panY: number; zoom: number },
+): void {
+  layer.graphics.clear();
+  if (layer.prepared.length === 0) return;
+
+  const screenWidth = Math.max(1.2, 2.5 / Math.max(view.zoom, 0.0001));
+
+  for (const a of layer.prepared) {
+    const sx = a.x0 * view.zoom + view.panX;
+    const sy = a.y0 * view.zoom + view.panY;
+    const tx = a.x1 * view.zoom + view.panX;
+    const ty = a.y1 * view.zoom + view.panY;
+
+    // Shaft. PIXI v8: build the path with moveTo+lineTo, then stroke.
+    layer.graphics.moveTo(sx, sy);
+    layer.graphics.lineTo(tx, ty);
+    layer.graphics.stroke({
+      width: screenWidth * view.zoom,
+      color: a.color,
+      alpha: 0.95,
+    });
+
+    // Arrowhead — small filled triangle pointing toward target.
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const len = Math.hypot(dx, dy);
+    if (len < 6) continue;
+    const ux = dx / len;
+    const uy = dy / len;
+    // px = perpendicular unit vector for the triangle base.
+    const px = -uy;
+    const py = ux;
+    const headLen = 12;
+    const headHalfWidth = 6;
+    const bx = tx - ux * headLen;
+    const by = ty - uy * headLen;
+    layer.graphics.poly(
+      [
+        tx,
+        ty,
+        bx + px * headHalfWidth,
+        by + py * headHalfWidth,
+        bx - px * headHalfWidth,
+        by - py * headHalfWidth,
+      ],
+      true,
+    );
+    layer.graphics.fill({ color: a.color, alpha: 0.95 });
+  }
+}

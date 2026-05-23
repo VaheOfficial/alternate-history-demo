@@ -9,7 +9,8 @@ use crate::engine::{
     run_npc_turn, tick_pending, ApplyOutcome, MovementOutcome, NpcTurnResult,
     ProductionOutcome, ProductionRequest,
 };
-use crate::world::ids::{ProvinceId, UnitId};
+use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
+use crate::world::ids::{NationId, ProvinceId, UnitId};
 use crate::error::{AppError, Result};
 use crate::providers::types::{ChatMessage, ChatRequest, Role};
 use crate::saves::snapshot::save_snapshot;
@@ -408,6 +409,259 @@ pub async fn move_unit_cmd(
         outcome,
         world: mutable,
     })
+}
+
+// ─── Battle plans (Plan 10) ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateBattlePlanRequest {
+    pub owner: NationId,
+    pub target: ProvinceId,
+    pub sources: Vec<ProvinceId>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BattlePlanExecuteResult {
+    pub world: World,
+    /// One entry per source province in the plan, showing the outcome
+    /// of moving its units one hop toward the target.
+    pub steps: Vec<BattlePlanStep>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BattlePlanStep {
+    pub source: ProvinceId,
+    pub hop_target: Option<ProvinceId>,
+    pub units_moved: u32,
+    pub outcome: MovementOutcome,
+    pub note: Option<String>,
+}
+
+/// Create a battle plan and store it on the world. v1 does no upfront
+/// validation beyond "the owner nation and the target province both exist"
+/// — execution does the real movement check and surfaces engine failures
+/// then. That keeps the create surface forgiving (player can sketch out a
+/// plan, then iterate).
+#[tauri::command]
+pub async fn create_battle_plan_cmd(
+    world: World,
+    request: CreateBattlePlanRequest,
+) -> Result<World> {
+    if !world.nations.iter().any(|n| n.id == request.owner) {
+        return Err(AppError::NotFound(format!(
+            "owner nation {} not in world",
+            request.owner
+        )));
+    }
+    if !world.provinces.iter().any(|p| p.id == request.target) {
+        return Err(AppError::NotFound(format!(
+            "target province {} not in world",
+            request.target
+        )));
+    }
+    let mut mutable = world;
+    mutable.battle_plans.push(BattlePlan {
+        id: Uuid::new_v4().to_string(),
+        owner: request.owner,
+        target: request.target,
+        sources: request.sources,
+        status: BattlePlanStatus::Planned,
+        created_on: mutable.clock.current_date,
+        executions: 0,
+    });
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+#[tauri::command]
+pub async fn cancel_battle_plan_cmd(world: World, plan_id: String) -> Result<World> {
+    let mut mutable = world;
+    let before = mutable.battle_plans.len();
+    mutable.battle_plans.retain(|p| p.id != plan_id);
+    if mutable.battle_plans.len() == before {
+        return Err(AppError::NotFound(format!("battle plan {} not found", plan_id)));
+    }
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+/// Execute a battle plan: for each source province, move every unit owned
+/// by the plan's owner one hop toward the target. The hop is the first
+/// neighbour of the source that lies on a shortest path to the target,
+/// using BFS over the adjacency graph (foreign provinces are passable in
+/// the BFS — combat at each hop is gated by `resolve_movement`'s peacetime
+/// rules, which is the correct behavior).
+#[tauri::command]
+pub async fn execute_battle_plan_cmd(
+    world: World,
+    plan_id: String,
+    adjacency: std::collections::HashMap<String, Vec<String>>,
+) -> Result<BattlePlanExecuteResult> {
+    let mut mutable = world;
+
+    // Lift the plan out so we can mutate the world freely. Re-insert at end.
+    let plan_idx = mutable
+        .battle_plans
+        .iter()
+        .position(|p| p.id == plan_id)
+        .ok_or_else(|| AppError::NotFound(format!("battle plan {} not found", plan_id)))?;
+    let mut plan = mutable.battle_plans.remove(plan_idx);
+
+    let target_ref = mutable
+        .provinces
+        .iter()
+        .find(|p| p.id == plan.target)
+        .map(|p| p.geometry_ref.clone())
+        .ok_or_else(|| AppError::NotFound("battle plan target province missing".into()))?;
+
+    let mut steps: Vec<BattlePlanStep> = Vec::with_capacity(plan.sources.len());
+    let lookup =
+        |s: &str| -> Vec<String> { adjacency.get(s).cloned().unwrap_or_default() };
+
+    for source_id in plan.sources.clone() {
+        let source_ref = match mutable.provinces.iter().find(|p| p.id == source_id) {
+            Some(p) => p.geometry_ref.clone(),
+            None => {
+                steps.push(BattlePlanStep {
+                    source: source_id,
+                    hop_target: None,
+                    units_moved: 0,
+                    outcome: MovementOutcome::Invalid {
+                        reason: "source province no longer exists".into(),
+                    },
+                    note: None,
+                });
+                continue;
+            }
+        };
+
+        let hop_ref = match next_hop(&source_ref, &target_ref, &adjacency) {
+            Some(hop) => hop,
+            None => {
+                steps.push(BattlePlanStep {
+                    source: source_id,
+                    hop_target: None,
+                    units_moved: 0,
+                    outcome: MovementOutcome::Invalid {
+                        reason: "no land path from this source to target".into(),
+                    },
+                    note: Some("Likely separated by sea — drop a unit closer via shift+click first.".into()),
+                });
+                continue;
+            }
+        };
+        let hop_target_id = match mutable
+            .provinces
+            .iter()
+            .find(|p| p.geometry_ref == hop_ref)
+            .map(|p| p.id)
+        {
+            Some(id) => id,
+            None => {
+                steps.push(BattlePlanStep {
+                    source: source_id,
+                    hop_target: None,
+                    units_moved: 0,
+                    outcome: MovementOutcome::Invalid {
+                        reason: "next-hop province not in world".into(),
+                    },
+                    note: None,
+                });
+                continue;
+            }
+        };
+
+        // Move every unit owned by plan.owner currently at the source.
+        let moving: Vec<UnitId> = mutable
+            .units
+            .iter()
+            .filter(|u| u.owner == plan.owner && u.location == source_id)
+            .map(|u| u.id)
+            .collect();
+        let mut last_outcome = MovementOutcome::Moved;
+        let mut moved_count: u32 = 0;
+        for uid in moving {
+            let outcome = resolve_movement(&mut mutable, uid, hop_target_id, &lookup);
+            // First Invalid stops further moves from this source — usually a
+            // peacetime-guard rejection that applies to every unit.
+            let is_invalid = matches!(outcome, MovementOutcome::Invalid { .. });
+            if is_invalid {
+                last_outcome = outcome;
+                break;
+            }
+            last_outcome = outcome;
+            moved_count += 1;
+        }
+
+        steps.push(BattlePlanStep {
+            source: source_id,
+            hop_target: Some(hop_target_id),
+            units_moved: moved_count,
+            outcome: last_outcome,
+            note: None,
+        });
+    }
+
+    plan.executions += 1;
+    plan.status = BattlePlanStatus::Executed;
+    mutable.battle_plans.insert(plan_idx, plan);
+
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(BattlePlanExecuteResult {
+        world: mutable,
+        steps,
+    })
+}
+
+/// BFS from `source` to `target` over the adjacency graph; return the
+/// first neighbour of `source` on the shortest path, or None if no path
+/// exists. Bounded depth so a pathological map doesn't burn forever.
+fn next_hop(
+    source: &str,
+    target: &str,
+    adjacency: &std::collections::HashMap<String, Vec<String>>,
+) -> Option<String> {
+    if source == target {
+        return None;
+    }
+    use std::collections::{HashMap as Map, VecDeque};
+    let mut parents: Map<String, String> = Map::new();
+    let mut q: VecDeque<String> = VecDeque::new();
+    q.push_back(source.to_string());
+    parents.insert(source.to_string(), source.to_string());
+    let mut steps = 0;
+    while let Some(cur) = q.pop_front() {
+        if steps > 4000 {
+            return None;
+        }
+        steps += 1;
+        let neighbours = match adjacency.get(&cur) {
+            Some(n) => n,
+            None => continue,
+        };
+        for n in neighbours {
+            if parents.contains_key(n) {
+                continue;
+            }
+            parents.insert(n.clone(), cur.clone());
+            if n == target {
+                // Walk parents back to find the neighbour of source.
+                let mut node = n.clone();
+                while let Some(p) = parents.get(&node) {
+                    if p == source {
+                        return Some(node);
+                    }
+                    if p == &node {
+                        break;
+                    }
+                    node = p.clone();
+                }
+                return None;
+            }
+            q.push_back(n.clone());
+        }
+    }
+    None
 }
 
 /// Run the NPC turn — the LLM picks 3–6 relevant nations to act, then each

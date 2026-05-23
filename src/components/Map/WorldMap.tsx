@@ -7,6 +7,7 @@ import {
   buildCountryHighlight,
   buildCountryLabels,
   buildFog,
+  buildPlanArrows,
   buildPolygons,
   buildUnits,
   clampView,
@@ -15,6 +16,7 @@ import {
   createFogLayer,
   createHighlightLayer,
   createPixiScene,
+  createPlanArrowsLayer,
   createTileSet,
   createUnitLayer,
   resetTiles,
@@ -22,6 +24,7 @@ import {
   updateCities,
   updateCountryHighlight,
   updateCountryLabels,
+  updatePlanArrows,
   updateTiles,
   updateUnits,
   worldExtentAtBase,
@@ -29,6 +32,8 @@ import {
   type CountryLabelLayer,
   type FogLayer,
   type HighlightLayer,
+  type PlanArrowInput,
+  type PlanArrowsLayer,
   type SceneHandles,
   type TileSet,
   type UnitLayer,
@@ -76,8 +81,10 @@ export function WorldMap({
   selectedIso,
   ownedByIso,
   visibleProvinces,
+  planArrows,
   onProvinceHover,
   onProvinceClick,
+  onProvinceRightClick,
   unitStacks,
 }: {
   ownershipColors?: Map<string, string>;
@@ -98,8 +105,19 @@ export function WorldMap({
    * When undefined (no player nation yet / observer mode), no fog renders.
    */
   visibleProvinces?: Set<string>;
+  /**
+   * Battle-plan arrows (Plan 10) — one entry per source→target leg drawn
+   * on the map. Pure visual; gestures are handled via `onProvinceClick`
+   * (shift+click) and `onProvinceRightClick`.
+   */
+  planArrows?: PlanArrowInput[];
   onProvinceHover?: (info: ProvinceHoverInfo | null) => void;
   onProvinceClick?: (shape_id: string, modifiers: { shift: boolean }) => void;
+  /**
+   * Right-click on a province. Used to set the target of a battle plan
+   * when there's at least one source selected.
+   */
+  onProvinceRightClick?: (shape_id: string) => void;
   /** Per-province unit stack data — drawn as small circles with count badges. */
   unitStacks?: Array<{
     lon: number;
@@ -119,6 +137,7 @@ export function WorldMap({
   const highlightLayerRef = useRef<HighlightLayer | null>(null);
   const fogLayerRef = useRef<FogLayer | null>(null);
   const unitLayerRef = useRef<UnitLayer | null>(null);
+  const planArrowsLayerRef = useRef<PlanArrowsLayer | null>(null);
   const indexRef = useRef<ProvinceIndex | null>(null);
 
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
@@ -193,6 +212,7 @@ export function WorldMap({
       highlightLayerRef.current = createHighlightLayer(scene.highlightContainer);
       fogLayerRef.current = createFogLayer(scene.fogContainer);
       unitLayerRef.current = createUnitLayer(scene.unitContainer);
+      planArrowsLayerRef.current = createPlanArrowsLayer(scene.planArrowsContainer);
       setReady(true);
     })();
 
@@ -206,6 +226,7 @@ export function WorldMap({
       highlightLayerRef.current = null;
       fogLayerRef.current = null;
       unitLayerRef.current = null;
+      planArrowsLayerRef.current = null;
       indexRef.current = null;
       setReady(false);
     };
@@ -221,6 +242,7 @@ export function WorldMap({
     const highlightLayer = highlightLayerRef.current;
     const fogLayer = fogLayerRef.current;
     const unitLayer = unitLayerRef.current;
+    const planArrowsLayer = planArrowsLayerRef.current;
     if (
       !scene ||
       !tiles ||
@@ -229,6 +251,7 @@ export function WorldMap({
       !highlightLayer ||
       !fogLayer ||
       !unitLayer ||
+      !planArrowsLayer ||
       !ready
     )
       return;
@@ -313,12 +336,17 @@ export function WorldMap({
       buildUnits(unitLayer, size.w, size.h, []);
     }
 
+    // Battle-plan arrows (Plan 10) — rebuild whenever the input list
+    // changes (selection draft, plans created/cancelled/executed).
+    buildPlanArrows(planArrowsLayer, size.w, size.h, planArrows ?? []);
+
     applyView(scene.mapContainer, applyV);
     updateTiles(tiles, applyV, { w: size.w, h: size.h });
     updateCities(cityLayer, applyV, { w: size.w, h: size.h });
     updateCountryLabels(countryLayer, applyV, { w: size.w, h: size.h });
     updateCountryHighlight(highlightLayer, applyV);
     updateUnits(unitLayer, applyV, { w: size.w, h: size.h });
+    updatePlanArrows(planArrowsLayer, applyV);
   }, [
     ready,
     state,
@@ -331,6 +359,7 @@ export function WorldMap({
     playerIso,
     selectedIso,
     unitStacks,
+    planArrows,
   ]);
 
   // Per-view update: apply transform + sync tile / city / country / highlight.
@@ -341,13 +370,25 @@ export function WorldMap({
     const countryLayer = countryLayerRef.current;
     const highlightLayer = highlightLayerRef.current;
     const unitLayer = unitLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !unitLayer || !ready) return;
+    const planArrowsLayer = planArrowsLayerRef.current;
+    if (
+      !scene ||
+      !tiles ||
+      !cityLayer ||
+      !countryLayer ||
+      !highlightLayer ||
+      !unitLayer ||
+      !planArrowsLayer ||
+      !ready
+    )
+      return;
     applyView(scene.mapContainer, view);
     updateTiles(tiles, view, { w: size.w, h: size.h });
     updateCities(cityLayer, view, { w: size.w, h: size.h });
     updateCountryLabels(countryLayer, view, { w: size.w, h: size.h });
     updateCountryHighlight(highlightLayer, view);
     updateUnits(unitLayer, view, { w: size.w, h: size.h });
+    updatePlanArrows(planArrowsLayer, view);
   }, [view, ready, size.w, size.h]);
 
   // Drag (pan) — also tracks recent drag distance so a click that follows a
@@ -455,6 +496,24 @@ export function WorldMap({
 
   const resetView = () => setView(clampToWorld(INITIAL_VIEW, size));
 
+  // Right-click handler — Plan 10 battle plans use this to set the target
+  // of an in-progress selection. Always preventDefault so the browser
+  // context menu doesn't pop up over the map.
+  const onContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!onProvinceRightClick) return;
+    const c = hostRef.current;
+    const idx = indexRef.current;
+    if (!c || !idx) return;
+    const rect = c.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const wx = (sx - viewRef.current.panX) / viewRef.current.zoom;
+    const wy = (sy - viewRef.current.panY) / viewRef.current.zoom;
+    const sid = pickProvince(idx, wx, wy);
+    if (sid) onProvinceRightClick(sid);
+  };
+
   return (
     <div style={containerStyle} ref={containerRef}>
       <div
@@ -464,6 +523,7 @@ export function WorldMap({
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseLeave}
         onWheel={onWheel}
+        onContextMenu={onContextMenu}
         style={{
           position: "absolute",
           inset: 0,

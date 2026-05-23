@@ -139,6 +139,18 @@ export interface PendingAction {
   on_complete: unknown[];
 }
 
+export type BattlePlanStatus = "planned" | "executed" | "cancelled";
+
+export interface BattlePlan {
+  id: string;
+  owner: string;
+  target: string;
+  sources: string[];
+  status: BattlePlanStatus;
+  created_on: string;
+  executions: number;
+}
+
 export interface World {
   save_id: string;
   branch_id: string;
@@ -153,6 +165,7 @@ export interface World {
   frontlines: unknown[];
   events: unknown[];
   pending: PendingAction[];
+  battle_plans: BattlePlan[];
 }
 
 export interface SaveSummary {

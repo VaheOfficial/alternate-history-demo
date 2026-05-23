@@ -78,6 +78,9 @@ pub fn run() {
             commands::game::request_production_cmd,
             commands::game::move_unit_cmd,
             commands::game::request_advisor_cmd,
+            commands::game::create_battle_plan_cmd,
+            commands::game::cancel_battle_plan_cmd,
+            commands::game::execute_battle_plan_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
