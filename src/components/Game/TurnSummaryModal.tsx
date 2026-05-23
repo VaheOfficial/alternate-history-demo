@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { Nation } from "../../lib/game/types";
 import type { NationTurn, OrchestratorPick } from "../../lib/game/tauri";
 import { colorForMapcolor } from "../../lib/map/renderer";
@@ -35,9 +36,20 @@ export function TurnSummaryModal({
   const acted = new Set(nationTurns.map((t) => t.iso));
   const passive = picks.filter((p) => !acted.has(p.iso));
 
+  // Escape closes the modal. Backdrop click does NOT — the player asked to
+  // not have it dismiss out from under them while they're reading. They
+  // close it explicitly with the × button or Escape.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
   return (
-    <div style={backdropStyle} onClick={onClose} className="ahd-motion-fade-in">
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()} className="ahd-motion-fade-up">
+    <div style={backdropStyle} className="ahd-motion-fade-in">
+      <div style={modalStyle} className="ahd-motion-fade-up">
         <div style={headerStyle}>
           <div>
             <div style={preTitleStyle}>Turn complete</div>

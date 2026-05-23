@@ -6,6 +6,7 @@ import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors
 import type { Nation, World } from "../../lib/game/types";
 import {
   endTurn,
+  moveUnit,
   runNpcTurn,
   type NationTurn,
   type NpcTurnResult,
@@ -13,6 +14,7 @@ import {
 } from "../../lib/game/tauri";
 import { listProviderConfigs, listModels } from "../../lib/tauri";
 import type { ProviderConfig } from "../../lib/types";
+import { AdvisorPanel } from "./AdvisorPanel";
 import { CountryDrawer } from "./CountryDrawer";
 import { ProvinceTooltip } from "./ProvinceTooltip";
 import { OrderQueuePanel } from "./OrderQueuePanel";
@@ -91,6 +93,27 @@ export function GameSession({
     return world.nations.find((n) => n.id === selectedNation)?.iso_a3 ?? null;
   }, [selectedNation, world.nations]);
 
+  // ISO3 → set of currently-owned shape_ids. Drives the live country-outline
+  // highlight in WorldMap so conquests extend the ring immediately. Includes
+  // only ISOs we actually highlight (player + selected) — no point computing
+  // owned-sets for every nation in the world on every render.
+  const ownedByIso = useMemo(() => {
+    const nationById = new Map<string, string>(); // nation_id → iso_a3
+    for (const n of world.nations) nationById.set(n.id, n.iso_a3);
+    const map = new Map<string, Set<string>>();
+    for (const p of world.provinces) {
+      const iso = nationById.get(p.owner);
+      if (!iso) continue;
+      let set = map.get(iso);
+      if (!set) {
+        set = new Set<string>();
+        map.set(iso, set);
+      }
+      set.add(p.geometry_ref);
+    }
+    return map;
+  }, [world.provinces, world.nations]);
+
   const hoveredProvince = useMemo(
     () => (hover ? findProvinceByShape(world, hover.shape_id) : null),
     [world, hover],
@@ -100,9 +123,149 @@ export function GameSession({
     return world.nations.find((n) => n.id === hoveredProvince.owner) ?? null;
   }, [world, hoveredProvince]);
 
-  const handleClick = (shape_id: string) => {
+  // Units stationed in the hovered province, grouped by owning nation so the
+  // tooltip shows the garrison composition.
+  const hoveredGarrison = useMemo(() => {
+    if (!hoveredProvince) return [];
+    const groups = new Map<string, { nation: Nation; units: typeof world.units }>();
+    for (const u of world.units) {
+      if (u.location !== hoveredProvince.id) continue;
+      const nation = world.nations.find((n) => n.id === u.owner);
+      if (!nation) continue;
+      let g = groups.get(u.owner);
+      if (!g) {
+        g = { nation, units: [] };
+        groups.set(u.owner, g);
+      }
+      g.units.push(u);
+    }
+    return [...groups.values()];
+  }, [hoveredProvince, world.units, world.nations]);
+
+  // Shift+click movement workflow:
+  //   1. Shift+click a province that contains your divisions → selects it.
+  //      The next non-shift click anywhere clears the selection; the next
+  //      shift+click on an ADJACENT province with the selection set moves
+  //      every player division from source to target.
+  //   2. Plain click still opens the CountryDrawer for the owning nation,
+  //      so non-movement workflows are unchanged.
+  const [moveSource, setMoveSource] = useState<{
+    shapeId: string;
+    provinceId: string;
+    unitCount: number;
+  } | null>(null);
+  const [adjacency, setAdjacency] = useState<Record<string, string[]> | null>(null);
+  const [moveStatus, setMoveStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/province-adjacency.json")
+      .then((r) => r.json())
+      .then((data: { adjacency: Record<string, string[]> }) => {
+        if (!cancelled) setAdjacency(data.adjacency);
+      })
+      .catch(() => {
+        // Non-fatal — movement just falls back to the embedded server-side map.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && moveSource) {
+        setMoveSource(null);
+        setMoveStatus("Movement cancelled.");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [moveSource]);
+
+  const handleClick = async (
+    shape_id: string,
+    modifiers: { shift: boolean },
+  ) => {
     const p = findProvinceByShape(world, shape_id);
     if (!p) return;
+
+    if (modifiers.shift && world.player_nation) {
+      const friendlyUnits = world.units.filter(
+        (u) => u.location === p.id && u.owner === world.player_nation,
+      );
+      if (!moveSource) {
+        // First shift+click: must have player units in this province.
+        if (friendlyUnits.length === 0) {
+          setMoveStatus(
+            `${p.name} has no friendly divisions to move. Shift-click a province with your units first.`,
+          );
+          return;
+        }
+        setMoveSource({
+          shapeId: shape_id,
+          provinceId: p.id,
+          unitCount: friendlyUnits.length,
+        });
+        setMoveStatus(
+          `Selected ${friendlyUnits.length} division(s) in ${p.name}. Shift-click an adjacent province to move.`,
+        );
+        return;
+      }
+      // Second shift+click: validate adjacency, then move every player unit.
+      if (moveSource.shapeId === shape_id) {
+        setMoveSource(null);
+        setMoveStatus("Movement cancelled.");
+        return;
+      }
+      const adj = adjacency?.[moveSource.shapeId] ?? [];
+      if (!adj.includes(shape_id)) {
+        setMoveStatus(
+          `${p.name} is not adjacent to the source. Pick a neighbouring province (highlighted on the map).`,
+        );
+        return;
+      }
+      const movingUnits = world.units.filter(
+        (u) =>
+          u.location === moveSource.provinceId &&
+          u.owner === world.player_nation,
+      );
+      if (movingUnits.length === 0) {
+        setMoveSource(null);
+        return;
+      }
+      setMoveStatus(`Moving ${movingUnits.length} division(s) to ${p.name}…`);
+      let workingWorld = world;
+      let lastOutcome = "";
+      for (const u of movingUnits) {
+        try {
+          const r = await moveUnit(
+            workingWorld,
+            u.id,
+            p.id,
+            adjacency ?? {},
+          );
+          workingWorld = r.world;
+          lastOutcome = r.outcome.outcome;
+        } catch (e) {
+          setMoveStatus(`Move failed: ${String(e)}`);
+          setMoveSource(null);
+          return;
+        }
+      }
+      setWorld(workingWorld);
+      setMoveSource(null);
+      setMoveStatus(
+        `${movingUnits.length} division(s) arrived in ${p.name} (${lastOutcome}).`,
+      );
+      return;
+    }
+
+    // Plain click → cancel any pending move and open the country drawer.
+    if (moveSource) {
+      setMoveSource(null);
+      setMoveStatus(null);
+    }
     setSelectedNation(p.owner);
     setSelectedShape(shape_id);
   };
@@ -268,6 +431,14 @@ export function GameSession({
         onWorldUpdate={setWorld}
       />
     ),
+    advisor: (
+      <AdvisorPanel
+        world={world}
+        providerId={providerId}
+        model={model}
+        onWorldUpdate={setWorld}
+      />
+    ),
     saves: <SavesPanel world={world} onLoaded={setWorld} />,
     history: <HistoryPanel world={world} />,
   } satisfies Record<DockTab, React.ReactNode>;
@@ -278,6 +449,7 @@ export function GameSession({
         date={world.clock.current_date}
         round={world.clock.round}
         playerNation={playerNation}
+        pending={world.pending ?? []}
         busy={busy}
         pacingHint={pacingHint}
         onEndTurn={handleEndTurn}
@@ -292,15 +464,53 @@ export function GameSession({
           ownershipColors={ownershipColors}
           playerIso={playerIso}
           selectedIso={selectedIso}
+          ownedByIso={ownedByIso}
           onProvinceHover={setHover}
           onProvinceClick={handleClick}
           unitStacks={unitStacks}
         />
         <div className="ahd-map-vignette" />
+        {moveStatus && (
+          <div
+            style={{
+              position: "absolute",
+              top: 14,
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: moveSource
+                ? "rgba(122,162,247,0.92)"
+                : "rgba(15, 17, 21, 0.92)",
+              color: moveSource ? "#0c1322" : "var(--fg)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: "var(--radius-md)",
+              padding: "8px 14px",
+              fontSize: "var(--fs-sm)",
+              fontWeight: 600,
+              zIndex: 8,
+              maxWidth: 560,
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
+              cursor: "pointer",
+            }}
+            onClick={() => {
+              setMoveSource(null);
+              setMoveStatus(null);
+            }}
+            title="Click to dismiss"
+          >
+            {moveStatus}
+            {moveSource && (
+              <span style={{ marginLeft: 12, fontWeight: 500, opacity: 0.85 }}>
+                (Esc or click here to cancel)
+              </span>
+            )}
+          </div>
+        )}
         {hover && hoveredProvince && (
           <ProvinceTooltip
             province={hoveredProvince}
             owner={hoveredOwner}
+            unitsHere={hoveredGarrison}
             x={hover.clientX}
             y={hover.clientY}
           />
@@ -332,8 +542,10 @@ export function GameSession({
             npcError={lastSummaryRef.current.npc_error}
             onClose={() => setSummaryOpen(false)}
             onFocusNation={(nationId) => {
+              // Keep the modal open so the player can read multiple nation
+              // turns without it dismissing — they explicitly close with ×
+              // or Escape when done.
               setSelectedNation(nationId);
-              setSummaryOpen(false);
             }}
           />
         )}

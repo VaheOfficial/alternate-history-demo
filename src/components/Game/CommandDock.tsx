@@ -4,9 +4,10 @@ import {
   DiskIcon,
   BookIcon,
   ChevronDownIcon,
+  GearIcon,
 } from "../ui/Icon";
 
-export type DockTab = "orders" | "saves" | "history";
+export type DockTab = "orders" | "advisor" | "saves" | "history";
 
 export function CommandDock({
   active,
@@ -26,6 +27,7 @@ export function CommandDock({
 }) {
   const tabs: Array<{ key: DockTab; label: string; icon: ReactNode }> = [
     { key: "orders", label: "Orders", icon: <ScrollIcon /> },
+    { key: "advisor", label: "Advisor", icon: <GearIcon /> },
     { key: "saves", label: "Saves", icon: <DiskIcon /> },
     { key: "history", label: "History", icon: <BookIcon /> },
   ];
@@ -77,9 +79,23 @@ export function CommandDock({
           </span>
         </button>
       </div>
+      {/* Keep every panel mounted at all times so each one preserves its own
+          local state (order threads, advisor suggestions, scroll position)
+          across tab switches. Only the active panel is visible — the others
+          are display:none. */}
       {!collapsed && (
         <div style={panelBodyStyle} className="ahd-motion-fade-in">
-          {panels[active]}
+          {tabs.map((t) => (
+            <div
+              key={t.key}
+              style={{
+                display: active === t.key ? "block" : "none",
+                height: "100%",
+              }}
+            >
+              {panels[t.key]}
+            </div>
+          ))}
         </div>
       )}
     </div>

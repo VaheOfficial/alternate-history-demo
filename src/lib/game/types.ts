@@ -128,6 +128,17 @@ export interface Treaty {
   terms: TreatyTerms;
 }
 
+export interface PendingAction {
+  id: string;
+  initiator: string;
+  label: string;
+  narrative: string;
+  started_on: string;
+  completes_on: string;
+  progress_pct: number;
+  on_complete: unknown[];
+}
+
 export interface World {
   save_id: string;
   branch_id: string;
@@ -141,6 +152,7 @@ export interface World {
   crises: unknown[];
   frontlines: unknown[];
   events: unknown[];
+  pending: PendingAction[];
 }
 
 export interface SaveSummary {

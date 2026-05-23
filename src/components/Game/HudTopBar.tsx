@@ -1,4 +1,4 @@
-import type { Nation } from "../../lib/game/types";
+import type { Nation, PendingAction } from "../../lib/game/types";
 import { colorForMapcolor } from "../../lib/map/renderer";
 import { TurnControls } from "./TurnControls";
 import {
@@ -13,6 +13,7 @@ export function HudTopBar({
   date,
   round,
   playerNation,
+  pending,
   busy,
   pacingHint,
   onEndTurn,
@@ -23,6 +24,7 @@ export function HudTopBar({
   date: string;
   round: number;
   playerNation: Nation | null;
+  pending: PendingAction[];
   busy: boolean;
   pacingHint: number | null;
   onEndTurn: (days: number) => void;
@@ -83,6 +85,27 @@ export function HudTopBar({
       <div style={rightClusterStyle}>
         <TurnControls busy={busy} pacingHint={pacingHint} onEndTurn={onEndTurn} />
       </div>
+      {pending.length > 0 && (
+        <div style={pendingStripStyle} title={`${pending.length} ongoing operation${pending.length === 1 ? "" : "s"}`}>
+          {pending.slice(0, 6).map((p) => (
+            <div key={p.id} style={pendingChipStyle} title={`${p.label} — ${p.narrative}`}>
+              <span style={{ fontSize: 10, fontWeight: 600 }}>{p.label.slice(0, 18)}</span>
+              <span style={pendingBarStyle}>
+                <span
+                  style={{
+                    ...pendingFillStyle,
+                    width: `${p.progress_pct}%`,
+                  }}
+                />
+              </span>
+              <span style={{ fontSize: 9, color: "var(--fg-dim)" }}>{p.progress_pct}%</span>
+            </div>
+          ))}
+          {pending.length > 6 && (
+            <span style={{ color: "var(--fg-dim)", fontSize: 10 }}>+{pending.length - 6}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -137,6 +160,7 @@ const topBarStyle: React.CSSProperties = {
   borderBottom: "1px solid var(--border-strong)",
   boxShadow: "0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 6px 16px rgba(0,0,0,0.35)",
   zIndex: 5,
+  position: "relative",
 };
 
 const leftClusterStyle: React.CSSProperties = {
@@ -239,4 +263,46 @@ const rightClusterStyle: React.CSSProperties = {
   alignItems: "center",
   gap: 12,
   flex: "0 0 auto",
+};
+
+const pendingStripStyle: React.CSSProperties = {
+  position: "absolute",
+  bottom: -28,
+  left: "50%",
+  transform: "translateX(-50%)",
+  display: "flex",
+  gap: 6,
+  padding: "4px 8px",
+  background: "rgba(15, 17, 21, 0.85)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-md)",
+  backdropFilter: "blur(8px)",
+  WebkitBackdropFilter: "blur(8px)",
+};
+
+const pendingChipStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 5,
+  padding: "2px 6px",
+  background: "var(--surface-2)",
+  border: "1px solid var(--border)",
+  borderRadius: 999,
+  color: "var(--fg)",
+};
+
+const pendingBarStyle: React.CSSProperties = {
+  display: "inline-block",
+  width: 40,
+  height: 4,
+  background: "var(--surface-3)",
+  borderRadius: 2,
+  overflow: "hidden",
+};
+
+const pendingFillStyle: React.CSSProperties = {
+  display: "block",
+  height: "100%",
+  background: "var(--accent)",
+  transition: "width 240ms ease-out",
 };

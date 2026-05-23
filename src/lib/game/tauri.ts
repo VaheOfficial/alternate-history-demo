@@ -46,12 +46,18 @@ export function endTurn(world: World, days: number) {
   return invoke<World>("end_turn_cmd", { world, days });
 }
 
+export interface PriorExchange {
+  player: string;
+  assistant: string;
+}
+
 export function validateAction(
   providerId: string,
   model: string,
   world: World,
   playerText: string,
   adjacency?: Record<string, string[]>,
+  priorExchanges?: PriorExchange[],
 ) {
   return invoke<ValidatorResult>("validate_action_cmd", {
     providerId,
@@ -59,6 +65,7 @@ export function validateAction(
     world,
     playerText,
     adjacency: adjacency ?? null,
+    priorExchanges: priorExchanges ?? null,
   });
 }
 
@@ -134,12 +141,14 @@ export function requestProduction(
   model: string,
   world: World,
   playerText: string,
+  priorExchanges?: PriorExchange[],
 ) {
   return invoke<ProductionResult>("request_production_cmd", {
     providerId,
     model,
     world,
     playerText,
+    priorExchanges: priorExchanges ?? null,
   });
 }
 
@@ -166,5 +175,29 @@ export function moveUnit(
     world,
     request: { unit, target },
     adjacency,
+  });
+}
+
+export interface AdvisorSuggestion {
+  label: string;
+  rationale: string;
+  order: string;
+  priority?: "high" | "medium" | "low" | null;
+}
+
+export interface AdvisorResult {
+  suggestions: AdvisorSuggestion[];
+  raw_response: string;
+}
+
+export function requestAdvisor(
+  providerId: string,
+  model: string,
+  world: World,
+) {
+  return invoke<AdvisorResult>("request_advisor_cmd", {
+    providerId,
+    model,
+    world,
   });
 }
