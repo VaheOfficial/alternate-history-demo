@@ -81,14 +81,7 @@ pub fn resolve_movement(
             }
         }
     };
-    let neighbours = adjacency_of(&from_ref);
-    if !neighbours.iter().any(|n| n == &to_ref) {
-        return MovementOutcome::Invalid {
-            reason: format!("{} not adjacent to {}", to_ref, from_ref),
-        };
-    }
 
-    // Are there hostile defenders at target?
     let target_owner = world
         .provinces
         .iter()
@@ -96,6 +89,50 @@ pub fn resolve_movement(
         .map(|p| p.owner)
         .unwrap_or(unit_owner);
 
+    // Naval / friendly-territory transit: if the destination is owned by the
+    // same nation as the unit, allow movement regardless of land adjacency.
+    // This is how Alaska→Washington works (sea route via Pacific). Real-world
+    // naval combat is out of v1 scope per the design doc; we model sea
+    // transit as an instant friendly-only hop.
+    let same_owner_transit = target_owner == unit_owner;
+    if !same_owner_transit {
+        let neighbours = adjacency_of(&from_ref);
+        if !neighbours.iter().any(|n| n == &to_ref) {
+            return MovementOutcome::Invalid {
+                reason: format!("{} not adjacent to {}", to_ref, from_ref),
+            };
+        }
+
+        // Peacetime border check. Crossing into foreign territory requires a
+        // state of war (relations <= -90). Without this, transiting through a
+        // neutral neighbour silently flips its province to your ownership —
+        // exactly the "I moved through Canada and accidentally conquered it"
+        // bug.
+        let at_war = world
+            .nations
+            .iter()
+            .find(|n| n.id == unit_owner)
+            .and_then(|n| n.relations.get(&target_owner))
+            .copied()
+            .map(|r| r <= -90)
+            .unwrap_or(false);
+        if !at_war {
+            let target_name = world
+                .nations
+                .iter()
+                .find(|n| n.id == target_owner)
+                .map(|n| n.name.clone())
+                .unwrap_or_else(|| "that nation".to_string());
+            return MovementOutcome::Invalid {
+                reason: format!(
+                    "Peacetime border violation: cannot enter {} territory without a state of war. Declare war first.",
+                    target_name
+                ),
+            };
+        }
+    }
+
+    // Are there hostile defenders at target?
     let defender_idxs: Vec<usize> = world
         .units
         .iter()
@@ -105,8 +142,9 @@ pub fn resolve_movement(
         .collect();
 
     if defender_idxs.is_empty() {
-        // Peaceful entry. Move the unit. If destination is enemy-owned and
-        // unguarded, the province flips immediately.
+        // Peaceful entry. Move the unit. Same-owner transit just relocates.
+        // Foreign-territory entry (only reachable when at_war) flips ownership
+        // since the defender abandoned the province.
         world.units[unit_idx].location = target_province_id;
         if target_owner != unit_owner {
             if let Some(p) = world
@@ -297,11 +335,15 @@ mod tests {
     use chrono::NaiveDate;
 
     fn world_with_two_nations() -> World {
-        build_modern_world(
+        let mut w = build_modern_world(
             SaveId::new(),
             BranchId::new(),
             NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
-        )
+        );
+        // Combat tests want a deterministic empty starting battlefield —
+        // strip the seeded military forces.
+        w.units.clear();
+        w
     }
 
     fn spawn(world: &mut World, owner: NationId, province: ProvinceId, strength: u32) -> UnitId {
@@ -340,11 +382,24 @@ mod tests {
         assert_eq!(w.units[0].location, p1);
     }
 
+    /// Mark two nations as at-war (relations = -100 both ways). Combat tests
+    /// that exercise conquest paths need this — peacetime moves into foreign
+    /// territory are now rejected (see `peacetime_border_violation_rejected`).
+    fn declare_war(world: &mut World, a: NationId, b: NationId) {
+        if let Some(n) = world.nations.iter_mut().find(|n| n.id == a) {
+            n.relations.insert(b, -100);
+        }
+        if let Some(n) = world.nations.iter_mut().find(|n| n.id == b) {
+            n.relations.insert(a, -100);
+        }
+    }
+
     #[test]
     fn unguarded_enemy_province_is_conquered() {
         let mut w = world_with_two_nations();
         let attacker = w.nations[0].id;
         let target_owner = w.nations[1].id;
+        declare_war(&mut w, attacker, target_owner);
         let p_atk = w.provinces.iter().find(|p| p.owner == attacker).unwrap().id;
         let p_tgt = w.provinces.iter().find(|p| p.owner == target_owner).unwrap().id;
         let u = spawn(&mut w, attacker, p_atk, 100);
@@ -362,15 +417,80 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_adjacent_move() {
+    fn rejects_non_adjacent_cross_border_move() {
+        // Cross-border move into foreign land that isn't adjacent: rejected.
+        // Same-owner non-adjacent (naval transit) gets its own test below.
         let mut w = world_with_two_nations();
-        let n = w.nations.iter().find(|n| n.iso_a3 == "USA").unwrap().id;
-        let p0 = w.provinces.iter().find(|p| p.owner == n).unwrap().id;
-        let p1 = w.provinces.iter().find(|p| p.owner == n && p.id != p0).unwrap().id;
-        let u = spawn(&mut w, n, p0, 100);
+        let attacker = w.nations[0].id;
+        let defender = w.nations[1].id;
+        declare_war(&mut w, attacker, defender);
+        let p0 = w.provinces.iter().find(|p| p.owner == attacker).unwrap().id;
+        let p1 = w.provinces.iter().find(|p| p.owner == defender).unwrap().id;
+        let u = spawn(&mut w, attacker, p0, 100);
         let adj = |_s: &str| -> Vec<String> { Vec::new() };
         let out = resolve_movement(&mut w, u, p1, &adj);
         assert!(matches!(out, MovementOutcome::Invalid { .. }));
+    }
+
+    #[test]
+    fn same_owner_transit_skips_adjacency_check() {
+        // Alaska → Washington style: both belong to the player, no land
+        // path between them, but movement should be allowed (naval transit).
+        let mut w = world_with_two_nations();
+        let n = w.nations.iter().find(|n| n.iso_a3 == "USA").unwrap().id;
+        let p0 = w.provinces.iter().find(|p| p.owner == n).unwrap().id;
+        let p1 = w
+            .provinces
+            .iter()
+            .find(|p| p.owner == n && p.id != p0)
+            .unwrap()
+            .id;
+        let u = spawn(&mut w, n, p0, 100);
+        // Empty adjacency map — neither province lists the other as a
+        // neighbour. The fix says same-owner moves bypass this gate.
+        let adj = |_s: &str| -> Vec<String> { Vec::new() };
+        let out = resolve_movement(&mut w, u, p1, &adj);
+        match out {
+            MovementOutcome::Moved => (),
+            other => panic!("expected Moved (same-owner transit), got {:?}", other),
+        }
+        assert_eq!(w.units[0].location, p1);
+    }
+
+    #[test]
+    fn peacetime_border_violation_rejected() {
+        // No war declared, attacker tries to enter foreign territory →
+        // refused. This is the "I moved through Canada and accidentally
+        // conquered it" bug fix.
+        let mut w = world_with_two_nations();
+        let attacker = w.nations[0].id;
+        let defender = w.nations[1].id;
+        // NB: deliberately NOT calling declare_war — they're at peace.
+        let p_atk = w.provinces.iter().find(|p| p.owner == attacker).unwrap().id;
+        let p_tgt = w.provinces.iter().find(|p| p.owner == defender).unwrap().id;
+        let u = spawn(&mut w, attacker, p_atk, 100);
+        let r_atk = w.provinces.iter().find(|p| p.id == p_atk).unwrap().geometry_ref.clone();
+        let r_tgt = w.provinces.iter().find(|p| p.id == p_tgt).unwrap().geometry_ref.clone();
+        let adj = |s: &str| -> Vec<String> {
+            if s == r_atk { vec![r_tgt.clone()] } else { vec![r_atk.clone()] }
+        };
+        let out = resolve_movement(&mut w, u, p_tgt, &adj);
+        match out {
+            MovementOutcome::Invalid { reason } => {
+                assert!(
+                    reason.to_lowercase().contains("war") || reason.to_lowercase().contains("peacetime"),
+                    "expected peacetime/war-required rejection, got {}",
+                    reason
+                );
+            }
+            other => panic!("expected Invalid (peacetime), got {:?}", other),
+        }
+        // The defender's province must still belong to the defender — no
+        // accidental conquest.
+        assert_eq!(
+            w.provinces.iter().find(|p| p.id == p_tgt).unwrap().owner,
+            defender
+        );
     }
 
     #[test]
@@ -378,6 +498,7 @@ mod tests {
         let mut w = world_with_two_nations();
         let attacker = w.nations[0].id;
         let defender = w.nations[1].id;
+        declare_war(&mut w, attacker, defender);
         let p_atk = w.provinces.iter().find(|p| p.owner == attacker).unwrap().id;
         let p_tgt = w.provinces.iter().find(|p| p.owner == defender).unwrap().id;
         // Decisive win = defender -80%. Defender at 20 strength → 4 after

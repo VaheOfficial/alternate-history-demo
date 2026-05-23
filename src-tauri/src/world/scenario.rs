@@ -14,18 +14,22 @@ use super::ids::{BranchId, NationId, NpcId, ProvinceId, SaveId};
 use super::nation::{
     DoctrineId, GovernmentType, IndustrySplit, Nation, ResourceStockpile, TechLevel,
 };
+use super::nation::UnitType;
 use super::npc::{
     Ideology, Npc, NpcPersona, NpcRole, PersonaArchetype, SpeechStyle,
 };
 use super::province::{Province, ResourceYield, Terrain};
 use super::treaty::{Treaty, TreatyKind, TreatyTerms};
+use super::unit::{SupplyState, Unit};
 use super::world::World;
-use super::ids::TreatyId;
+use super::ids::{TreatyId, UnitId};
 
 // The map pipeline writes these into `public/`. We embed them at compile time
 // so the seeder works offline and doesn't depend on Tauri resource paths.
 const COUNTRIES_JSON: &str = include_str!("../../../public/countries.json");
 const PROVINCES_META_JSON: &str = include_str!("../../../public/world-meta.json");
+const PROVINCE_ADJACENCY_JSON: &str =
+    include_str!("../../../public/province-adjacency.json");
 
 #[derive(Debug, Deserialize)]
 struct CountryRow {
@@ -66,6 +70,11 @@ struct ProvinceRow {
 #[derive(Debug, Deserialize)]
 struct ProvincesFile {
     provinces: Vec<ProvinceRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdjacencyFile {
+    adjacency: HashMap<String, Vec<String>>,
 }
 
 /// Tiny ISO3 → GovernmentType table. Anything not listed defaults to
@@ -308,21 +317,35 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
             .unwrap_or((0.0, 1_000_000, 5));
 
         let prov_area = p.area_deg2.max(0.0);
-        let share = if total_area > 0.0 {
+        let area_share = if total_area > 0.0 {
             (prov_area / total_area).clamp(0.0, 1.0)
         } else {
             0.0
         };
 
-        // Population: floor of 5k so tiny islands don't end up at zero.
-        let prov_pop =
-            ((country_pop as f64 * share) as i64).max(5_000);
-        // Industry distributed by area but only if country has ≥5 IC to share.
-        let prov_ind = if country_industry >= 5 {
-            ((country_industry as f64 * share) as u32).max(0)
+        // Population: distributed by area share with a 5k floor so tiny
+        // islands don't end up at zero.
+        let prov_pop = ((country_pop as f64 * area_share) as i64).max(5_000);
+
+        // Industry: distributed by POPULATION share (urbanized regions
+        // produce more), not area share. This avoids the bug where most
+        // provinces showed 0 IC even when the country had ~50 to share —
+        // big rural provinces stole all the share by area but had nothing
+        // to industrialize with.
+        //
+        // Floor: any inhabited province (>100k people) gets at least 1 IC.
+        let pop_share = if country_pop > 0 {
+            (prov_pop as f64 / country_pop as f64).clamp(0.0, 1.0)
         } else {
-            0
+            0.0
         };
+        let raw_ind = (country_industry as f64 * pop_share).round() as u32;
+        let prov_ind = if prov_pop >= 100_000 {
+            raw_ind.max(1)
+        } else {
+            raw_ind
+        };
+
         // Supply: area-bucketed 1..10. Bigger province = more supply.
         let supply = ((prov_area * 8.0) as u32).clamp(1, 10);
 
@@ -343,7 +366,9 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
     }
 
     let treaties = seed_alliances(&nation_by_iso, start);
+    let units = seed_units(&nations, &out_provinces, &provinces.provinces);
 
+    #[allow(clippy::redundant_field_names)]
     World {
         save_id: save,
         branch_id: branch,
@@ -351,12 +376,13 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
         player_nation: None,
         nations,
         provinces: out_provinces,
-        units: vec![],
+        units,
         npcs,
         treaties,
         crises: vec![],
         frontlines: vec![],
         events: vec![],
+        pending: vec![],
     }
 }
 
@@ -447,6 +473,158 @@ fn seed_alliances(
     treaties
 }
 
+/// Seed starting military units. Approximates HOI4-style divisions:
+///   - Count scales with manpower_pool (capped 1..60).
+///   - Type mix shifts with doctrine.
+///   - Placement: 25% at the nation's largest-pop province ("capital
+///     reserve"), 75% spread across BORDER PROVINCES (provinces with at
+///     least one foreign neighbor in the adjacency graph). Distribution
+///     weighted by population so big border regions get more.
+///   - Nations with no land borders (islands) park everything at the
+///     capital — there's nowhere else to deploy.
+fn seed_units(
+    nations: &[Nation],
+    provinces: &[Province],
+    raw_provinces: &[ProvinceRow],
+) -> Vec<Unit> {
+    // Parse adjacency once. If it fails, fall back to capital-only placement.
+    let adjacency: HashMap<String, Vec<String>> = serde_json::from_str::<AdjacencyFile>(
+        PROVINCE_ADJACENCY_JSON,
+    )
+    .map(|a| a.adjacency)
+    .unwrap_or_default();
+
+    // shape_id → iso_country lookup (so we can tell when a neighbour is foreign).
+    let iso_by_shape: HashMap<&str, &str> = raw_provinces
+        .iter()
+        .map(|p| (p.shape_id.as_str(), p.iso_country.as_str()))
+        .collect();
+
+    let mut out: Vec<Unit> = Vec::new();
+    for nation in nations {
+        let nation_provinces: Vec<&Province> =
+            provinces.iter().filter(|p| p.owner == nation.id).collect();
+        let capital = nation_provinces.iter().copied().max_by_key(|p| p.population);
+        let Some(capital) = capital else { continue };
+
+        // Border provinces: at least one adjacent province whose iso_country
+        // differs from this nation's iso.
+        let nation_iso = nation.iso_a3.as_str();
+        let border_provinces: Vec<&Province> = nation_provinces
+            .iter()
+            .copied()
+            .filter(|p| {
+                let Some(neighbors) = adjacency.get(p.geometry_ref.as_str()) else {
+                    return false;
+                };
+                neighbors.iter().any(|n_sid| {
+                    iso_by_shape
+                        .get(n_sid.as_str())
+                        .map(|iso| *iso != nation_iso && !iso.is_empty())
+                        .unwrap_or(false)
+                })
+            })
+            .collect();
+
+        // Division count: ~1 per 200K manpower, clamped.
+        let count = ((nation.manpower_pool / 200_000) as i64).clamp(1, 60) as u32;
+        let (inf_pct, mech_pct, arm_pct, _art_pct) = match nation.doctrine {
+            super::nation::DoctrineId::MobileWarfare => (40, 30, 25, 5),
+            super::nation::DoctrineId::MassAssault => (70, 10, 15, 5),
+            super::nation::DoctrineId::DefenseInDepth => (50, 20, 15, 15),
+            super::nation::DoctrineId::SuperiorFirepower => (50, 20, 20, 10),
+        };
+        let inf_count = (count * inf_pct) / 100;
+        let mech_count = (count * mech_pct) / 100;
+        let arm_count = (count * arm_pct) / 100;
+        let art_count = count
+            .saturating_sub(inf_count)
+            .saturating_sub(mech_count)
+            .saturating_sub(arm_count);
+
+        let strength = (75 + (nation.tech.0 as u32 * 5)).clamp(60, 120);
+
+        // Build the (shape_id, weight) deployment buckets.
+        // 25% of total goes to capital reserve; 75% spread across border
+        // provinces weighted by population. Island nations: 100% capital.
+        let mut buckets: Vec<(ProvinceId, u32)> = Vec::new();
+        let capital_reserve_pct: u32 = if border_provinces.is_empty() { 100 } else { 25 };
+        let cap_count = (count * capital_reserve_pct) / 100;
+        if cap_count > 0 {
+            buckets.push((capital.id, cap_count));
+        }
+        let frontline_total = count.saturating_sub(cap_count);
+        if frontline_total > 0 && !border_provinces.is_empty() {
+            // Sort border provinces by population descending so the biggest
+            // ones get the bulk of the deployment, but cycle through all of
+            // them so we don't pile everything in one place.
+            let mut sorted = border_provinces.clone();
+            sorted.sort_by_key(|p| std::cmp::Reverse(p.population));
+            // Round-robin so spread is visible even for small forces.
+            let mut remaining = frontline_total;
+            let mut idx = 0;
+            while remaining > 0 {
+                let p = sorted[idx % sorted.len()];
+                // Bigger border regions get up to 3 divs per pass, smaller ones get 1.
+                let take = if idx < 3 { 3.min(remaining) } else { 1.min(remaining) };
+                if let Some(existing) = buckets.iter_mut().find(|(pid, _)| *pid == p.id) {
+                    existing.1 += take;
+                } else {
+                    buckets.push((p.id, take));
+                }
+                remaining -= take;
+                idx += 1;
+                if idx > 200 { break; } // safety
+            }
+        }
+
+        // Now distribute the doctrine mix proportionally across buckets.
+        // Simple approach: cycle each type's divs round-robin over buckets so
+        // every garrison gets a mix.
+        let push_typed =
+            |out: &mut Vec<Unit>, buckets: &[(ProvinceId, u32)], n: u32, kind: UnitType| {
+                if n == 0 || buckets.is_empty() {
+                    return;
+                }
+                let weight_total: u32 = buckets.iter().map(|(_, w)| *w).sum();
+                if weight_total == 0 {
+                    return;
+                }
+                // Allocate proportional to bucket weight; remainder spills round-robin.
+                let mut allocated: Vec<u32> = buckets
+                    .iter()
+                    .map(|(_, w)| (n * w) / weight_total)
+                    .collect();
+                let mut remaining = n - allocated.iter().sum::<u32>();
+                let mut i = 0;
+                while remaining > 0 {
+                    allocated[i % buckets.len()] += 1;
+                    remaining -= 1;
+                    i += 1;
+                }
+                for (b_idx, (province_id, _)) in buckets.iter().enumerate() {
+                    for _ in 0..allocated[b_idx] {
+                        out.push(Unit {
+                            id: UnitId::new(),
+                            owner: nation.id,
+                            unit_type: kind,
+                            location: *province_id,
+                            strength,
+                            organization: 80,
+                            experience: 0,
+                            supply_state: SupplyState::Supplied,
+                        });
+                    }
+                }
+            };
+        push_typed(&mut out, &buckets, inf_count, UnitType::Infantry);
+        push_typed(&mut out, &buckets, mech_count, UnitType::Mechanized);
+        push_typed(&mut out, &buckets, arm_count, UnitType::Armor);
+        push_typed(&mut out, &buckets, art_count, UnitType::Artillery);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,6 +658,64 @@ mod tests {
         for p in &w.provinces {
             assert!(nation_ids.contains(&p.owner));
         }
+    }
+
+    #[test]
+    fn major_powers_units_spread_across_border_provinces() {
+        // USA borders Canada + Mexico, so it should have border provinces, and
+        // units should land in MORE than one province.
+        let w = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let usa = w.nations.iter().find(|n| n.iso_a3 == "USA").unwrap();
+        let usa_unit_provinces: std::collections::HashSet<ProvinceId> = w
+            .units
+            .iter()
+            .filter(|u| u.owner == usa.id)
+            .map(|u| u.location)
+            .collect();
+        assert!(
+            usa_unit_provinces.len() >= 3,
+            "USA units should be spread across multiple border provinces, got {}",
+            usa_unit_provinces.len()
+        );
+    }
+
+    #[test]
+    fn major_powers_seeded_with_many_units_small_states_with_few() {
+        let w = build_modern_world(
+            SaveId::new(),
+            BranchId::new(),
+            NaiveDate::from_ymd_opt(2026, 5, 22).unwrap(),
+        );
+        let usa = w.nations.iter().find(|n| n.iso_a3 == "USA").unwrap();
+        let usa_units = w.units.iter().filter(|u| u.owner == usa.id).count();
+        // USA's 328M pop × 3.5% manpower ÷ 200K per div ≈ ~57 divs → capped 60.
+        assert!(
+            usa_units >= 30 && usa_units <= 60,
+            "USA should have a sizeable force, got {}",
+            usa_units
+        );
+        // Tiny states should have only a handful.
+        if let Some(lva) = w.nations.iter().find(|n| n.iso_a3 == "LVA") {
+            let lva_units = w.units.iter().filter(|u| u.owner == lva.id).count();
+            assert!(
+                lva_units <= 10,
+                "Latvia should be small, got {} units",
+                lva_units
+            );
+        }
+        // Doctrine mix: Mobile Warfare (USA) has more armor than Mass
+        // Assault. Sanity: USA has some armored divisions.
+        use crate::world::nation::UnitType;
+        let usa_armor = w
+            .units
+            .iter()
+            .filter(|u| u.owner == usa.id && u.unit_type == UnitType::Armor)
+            .count();
+        assert!(usa_armor >= 1, "USA should have armored divisions");
     }
 
     #[test]
