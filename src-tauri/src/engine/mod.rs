@@ -15,6 +15,7 @@ pub mod pending;
 pub mod production;
 pub mod tick;
 pub mod victory;
+pub mod war;
 
 pub use apply::{apply_actions, ApplyOutcome};
 pub use combat::{resolve_movement, MovementOutcome};
@@ -24,3 +25,4 @@ pub use pending::tick_pending;
 pub use production::{apply_production, ProductionOutcome, ProductionRequest};
 pub use tick::advance_clock;
 pub use victory::{check_victory, compute_progress, mark_concluded, VictoryProgress};
+pub use war::{accept_peace_proposal, reject_peace_proposal, tick_wars};

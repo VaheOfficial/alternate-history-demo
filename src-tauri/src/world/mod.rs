@@ -15,6 +15,7 @@ pub mod scenario;
 pub mod treaty;
 pub mod unit;
 pub mod victory;
+pub mod war;
 pub mod world;
 
 pub use ids::*;

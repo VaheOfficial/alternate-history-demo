@@ -6,6 +6,7 @@ use super::clock::GameClock;
 use super::crisis::Crisis;
 use super::diplomacy::DiplomaticChannel;
 use super::victory::Victory;
+use super::war::War;
 use super::event::Event;
 use super::frontline::Frontline;
 use super::ids::{BranchId, NationId, SaveId};
@@ -48,6 +49,9 @@ pub struct World {
     /// advancing and the UI shows the victory modal.
     #[serde(default)]
     pub victory: Option<Victory>,
+    /// Active and concluded wars. Plan 12 Phase 1.
+    #[serde(default)]
+    pub wars: Vec<War>,
 }
 
 impl World {
@@ -72,6 +76,7 @@ impl World {
             battle_plans: vec![],
             diplomatic_channels: vec![],
             victory: None,
+            wars: vec![],
         }
     }
 }

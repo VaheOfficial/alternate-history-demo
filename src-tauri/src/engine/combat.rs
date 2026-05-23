@@ -154,6 +154,7 @@ pub fn resolve_movement(
             {
                 p.owner = unit_owner;
             }
+            record_war_conquest(world, unit_owner, target_owner, target_province_id);
             return MovementOutcome::BattleWonConquered {
                 defender_losses_pct: 0,
                 attacker_losses_pct: 0,
@@ -220,6 +221,7 @@ pub fn resolve_movement(
             {
                 p.owner = unit_owner;
             }
+            record_war_conquest(world, unit_owner, target_owner, target_province_id);
             return MovementOutcome::BattleWonConquered {
                 defender_losses_pct: def_pct,
                 attacker_losses_pct: atk_pct,
@@ -255,6 +257,7 @@ pub fn resolve_movement(
                 {
                     p.owner = unit_owner;
                 }
+                record_war_conquest(world, unit_owner, target_owner, target_province_id);
                 return MovementOutcome::BattleWonConquered {
                     defender_losses_pct: def_pct,
                     attacker_losses_pct: atk_pct,
@@ -323,6 +326,27 @@ fn apply_losses(world: &mut World, idx: usize, pct: u8) {
 
 fn cull_dead_units(world: &mut World) {
     world.units.retain(|u| u.strength >= 5);
+}
+
+/// Plan 12 Phase 1: when a conquest flips ownership, record the
+/// province on every active war between the aggressor and the
+/// defender so the peace-proposal generator can package it later.
+fn record_war_conquest(
+    world: &mut World,
+    aggressor: NationId,
+    defender: NationId,
+    province: ProvinceId,
+) {
+    for war in world.wars.iter_mut() {
+        if !matches!(war.status, crate::world::war::WarStatus::Active) {
+            continue;
+        }
+        if war.aggressor == aggressor && war.defenders.contains(&defender) {
+            if !war.conquered_provinces.contains(&province) {
+                war.conquered_provinces.push(province);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

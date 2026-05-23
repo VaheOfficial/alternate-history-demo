@@ -299,3 +299,29 @@ export function concedeRun(world: World) {
 export function victoryProgress(world: World) {
   return invoke<VictoryProgress>("victory_progress_cmd", { world });
 }
+
+// ─── Wars (Plan 12 Phase 1) ────────────────────────────────────────────────
+
+export function acceptPeaceProposal(
+  world: World,
+  warId: string,
+  proposalId: string,
+) {
+  return invoke<World>("accept_peace_proposal_cmd", {
+    world,
+    warId,
+    proposalId,
+  });
+}
+
+export function rejectPeaceProposal(
+  world: World,
+  warId: string,
+  proposalId: string,
+) {
+  return invoke<World>("reject_peace_proposal_cmd", {
+    world,
+    warId,
+    proposalId,
+  });
+}

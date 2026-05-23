@@ -386,6 +386,7 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
         battle_plans: vec![],
         diplomatic_channels: vec![],
         victory: None,
+        wars: vec![],
     }
 }
 

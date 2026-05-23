@@ -31,6 +31,11 @@ pub enum TypedAction {
         aggressor: NationId,
         target: NationId,
         justification: String,
+        /// Optional casus belli. When None on deserialize, the engine
+        /// defaults to HumiliateRival (Plan 12 Phase 1). Existing saves
+        /// + LLM outputs without this field still deserialize cleanly.
+        #[serde(default)]
+        casus_belli: Option<crate::world::war::CasusBelli>,
     },
     SignTreaty {
         parties: Vec<NationId>,
@@ -88,6 +93,7 @@ mod tests {
             aggressor: NationId::new(),
             target: NationId::new(),
             justification: "Casus belli over Sudetenland".into(),
+            casus_belli: None,
         };
         let json = serde_json::to_string(&a).unwrap();
         let back: TypedAction = serde_json::from_str(&json).unwrap();

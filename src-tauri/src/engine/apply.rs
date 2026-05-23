@@ -179,14 +179,37 @@ fn apply_one(
             aggressor,
             target,
             justification: _,
+            casus_belli,
         } => {
-            // Modeled as setting relations both ways to -100. War book-keeping
-            // (frontline creation, mobilization) comes with the combat module
-            // in Plan 05.
+            // Relations to -100 both ways (the existing peacetime-guard
+            // in combat.rs checks <= -90).
             for (a, b) in [(aggressor, target), (target, aggressor)] {
                 if let Some(n) = world.nations.iter_mut().find(|n| n.id == *a) {
                     n.relations.insert(*b, -100);
                 }
+            }
+
+            // Plan 12 Phase 1: record the War on the world. If there's
+            // already an active War record between the same parties,
+            // don't duplicate.
+            let already_active = world.wars.iter().any(|w| {
+                matches!(w.status, crate::world::war::WarStatus::Active)
+                    && w.aggressor == *aggressor
+                    && w.defenders.contains(target)
+            });
+            if !already_active {
+                let cb = casus_belli.unwrap_or(crate::world::war::CasusBelli::HumiliateRival);
+                world.wars.push(crate::world::war::War {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    aggressor: *aggressor,
+                    defenders: vec![*target],
+                    declared_on: world.clock.current_date,
+                    casus_belli: cb,
+                    occupation_pct: 0,
+                    conquered_provinces: Vec::new(),
+                    status: crate::world::war::WarStatus::Active,
+                    peace_proposals: Vec::new(),
+                });
             }
             Ok(())
         }

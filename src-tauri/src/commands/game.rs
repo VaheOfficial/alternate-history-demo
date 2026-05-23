@@ -5,10 +5,10 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::engine::{
-    advance_clock, apply_actions, apply_production, check_victory, compute_progress,
-    mark_concluded, resolve_movement, run_economy_tick, run_npc_turn, tick_pending,
-    ApplyOutcome, MovementOutcome, NpcTurnResult, ProductionOutcome, ProductionRequest,
-    VictoryProgress,
+    accept_peace_proposal, advance_clock, apply_actions, apply_production, check_victory,
+    compute_progress, mark_concluded, reject_peace_proposal, resolve_movement,
+    run_economy_tick, run_npc_turn, tick_pending, tick_wars, ApplyOutcome, MovementOutcome,
+    NpcTurnResult, ProductionOutcome, ProductionRequest, VictoryProgress,
 };
 use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
 use crate::world::diplomacy::{ChannelStatus, DiplomaticChannel, DiplomaticMessage};
@@ -32,9 +32,39 @@ pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     let mut advanced = advance_clock(world, days);
     run_economy_tick(&mut advanced, days.max(1));
     tick_pending(&mut advanced);
+    tick_wars(&mut advanced);
     check_victory(&mut advanced);
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
+}
+
+/// Player accepts a peace proposal attached to an active war.
+#[tauri::command]
+pub async fn accept_peace_proposal_cmd(
+    world: World,
+    war_id: String,
+    proposal_id: String,
+) -> Result<World> {
+    let mut mutable = world;
+    accept_peace_proposal(&mut mutable, &war_id, &proposal_id)
+        .map_err(|e| AppError::InvalidArgument(e))?;
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+/// Player rejects a peace proposal — it stays archived but the UI
+/// hides it from the active list.
+#[tauri::command]
+pub async fn reject_peace_proposal_cmd(
+    world: World,
+    war_id: String,
+    proposal_id: String,
+) -> Result<World> {
+    let mut mutable = world;
+    reject_peace_proposal(&mut mutable, &war_id, &proposal_id)
+        .map_err(|e| AppError::InvalidArgument(e))?;
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
 }
 
 /// Player explicitly concludes the run from the Menu. Stamps

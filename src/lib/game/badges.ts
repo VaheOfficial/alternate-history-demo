@@ -59,6 +59,23 @@ export function computeBadges(world: World): Partial<Record<DockTab, BadgeSpec>>
     out.plans = { level: "amber", count: planned };
   }
 
+  // War: red dot when an active war has an unresolved peace proposal
+  // (a decision is genuinely waiting on the player). Otherwise amber
+  // when any active war exists at all (just to highlight ongoing
+  // conflict).
+  const activeWars = (world.wars ?? []).filter((w) => w.status === "active");
+  let pendingProposals = 0;
+  for (const w of activeWars) {
+    for (const p of w.peace_proposals) {
+      if (!p.accepted && !p.rejected) pendingProposals++;
+    }
+  }
+  if (pendingProposals > 0) {
+    out.war = { level: "red", count: pendingProposals };
+  } else if (activeWars.length > 0) {
+    out.war = { level: "amber", count: activeWars.length };
+  }
+
   // Pending operations strip in the HUD already shows pending; we don't
   // re-badge the dock for it.
 

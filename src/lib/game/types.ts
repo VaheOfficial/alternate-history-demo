@@ -187,6 +187,7 @@ export interface World {
   battle_plans: BattlePlan[];
   diplomatic_channels: DiplomaticChannel[];
   victory?: Victory | null;
+  wars: War[];
 }
 
 export type VictoryKind =
@@ -207,6 +208,40 @@ export interface VictoryProgress {
   ind_pct: number;
   remaining_rivals: number;
   days_to_2050: number;
+}
+
+export type CasusBelli =
+  | "annex_provinces"
+  | "install_puppet"
+  | "force_concession"
+  | "demilitarize"
+  | "humiliate_rival"
+  | "free_nation";
+
+export type WarStatus = "active" | "concluded" | "white_peace";
+
+export interface PeaceProposal {
+  id: string;
+  from: string;
+  created_on: string;
+  threshold: number;
+  headline: string;
+  narrative: string;
+  actions: unknown[];
+  accepted: boolean;
+  rejected: boolean;
+}
+
+export interface War {
+  id: string;
+  aggressor: string;
+  defenders: string[];
+  declared_on: string;
+  casus_belli: CasusBelli;
+  occupation_pct: number;
+  conquered_provinces: string[];
+  status: WarStatus;
+  peace_proposals: PeaceProposal[];
 }
 
 export interface SaveSummary {
