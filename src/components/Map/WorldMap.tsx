@@ -6,11 +6,13 @@ import {
   buildCities,
   buildCountryHighlight,
   buildCountryLabels,
+  buildFog,
   buildPolygons,
   buildUnits,
   clampView,
   createCityLayer,
   createCountryLabelLayer,
+  createFogLayer,
   createHighlightLayer,
   createPixiScene,
   createTileSet,
@@ -25,6 +27,7 @@ import {
   worldExtentAtBase,
   type CityLayer,
   type CountryLabelLayer,
+  type FogLayer,
   type HighlightLayer,
   type SceneHandles,
   type TileSet,
@@ -72,6 +75,7 @@ export function WorldMap({
   playerIso,
   selectedIso,
   ownedByIso,
+  visibleProvinces,
   onProvinceHover,
   onProvinceClick,
   unitStacks,
@@ -88,6 +92,12 @@ export function WorldMap({
    * extends the highlight ring.
    */
   ownedByIso?: Map<string, Set<string>>;
+  /**
+   * Fog-of-war: geometry_refs the player is currently allowed to see in
+   * full. Provinces NOT in this set get a dim overlay drawn over them.
+   * When undefined (no player nation yet / observer mode), no fog renders.
+   */
+  visibleProvinces?: Set<string>;
   onProvinceHover?: (info: ProvinceHoverInfo | null) => void;
   onProvinceClick?: (shape_id: string, modifiers: { shift: boolean }) => void;
   /** Per-province unit stack data — drawn as small circles with count badges. */
@@ -107,6 +117,7 @@ export function WorldMap({
   const cityLayerRef = useRef<CityLayer | null>(null);
   const countryLayerRef = useRef<CountryLabelLayer | null>(null);
   const highlightLayerRef = useRef<HighlightLayer | null>(null);
+  const fogLayerRef = useRef<FogLayer | null>(null);
   const unitLayerRef = useRef<UnitLayer | null>(null);
   const indexRef = useRef<ProvinceIndex | null>(null);
 
@@ -180,6 +191,7 @@ export function WorldMap({
       cityLayerRef.current = createCityLayer(scene.cityContainer);
       countryLayerRef.current = createCountryLabelLayer(scene.countryLabelContainer);
       highlightLayerRef.current = createHighlightLayer(scene.highlightContainer);
+      fogLayerRef.current = createFogLayer(scene.fogContainer);
       unitLayerRef.current = createUnitLayer(scene.unitContainer);
       setReady(true);
     })();
@@ -192,6 +204,7 @@ export function WorldMap({
       cityLayerRef.current = null;
       countryLayerRef.current = null;
       highlightLayerRef.current = null;
+      fogLayerRef.current = null;
       unitLayerRef.current = null;
       indexRef.current = null;
       setReady(false);
@@ -206,8 +219,19 @@ export function WorldMap({
     const cityLayer = cityLayerRef.current;
     const countryLayer = countryLayerRef.current;
     const highlightLayer = highlightLayerRef.current;
+    const fogLayer = fogLayerRef.current;
     const unitLayer = unitLayerRef.current;
-    if (!scene || !tiles || !cityLayer || !countryLayer || !highlightLayer || !unitLayer || !ready) return;
+    if (
+      !scene ||
+      !tiles ||
+      !cityLayer ||
+      !countryLayer ||
+      !highlightLayer ||
+      !fogLayer ||
+      !unitLayer ||
+      !ready
+    )
+      return;
     if (state.status !== "ready") return;
 
     resizeRenderer(scene.app, size.w, size.h);
@@ -262,6 +286,21 @@ export function WorldMap({
       ],
     );
 
+    // Fog of war: dim every province NOT in the player's visible set.
+    // Undefined / empty visibleProvinces ⇒ no fog (observer mode or
+    // pre-pick).
+    if (visibleProvinces && visibleProvinces.size > 0) {
+      buildFog(fogLayer, state.data.features, visibleProvinces, size.w, size.h);
+    } else {
+      buildFog(fogLayer, state.data.features, new Set(), size.w, size.h);
+      // Clear: passing an empty visible set would actually fog the WHOLE
+      // map, so instead nuke whatever fog was on the layer.
+      for (const child of [...fogLayer.container.children]) {
+        fogLayer.container.removeChild(child);
+        child.destroy({ children: true });
+      }
+    }
+
     resetTiles(tiles, worldExtentAtBase(size.w, size.h));
     const clamped = clampToWorld(view, size);
     const applyV = clamped;
@@ -280,7 +319,19 @@ export function WorldMap({
     updateCountryLabels(countryLayer, applyV, { w: size.w, h: size.h });
     updateCountryHighlight(highlightLayer, applyV);
     updateUnits(unitLayer, applyV, { w: size.w, h: size.h });
-  }, [ready, state, size, effectiveFill, cities, countries, ownedByIso, playerIso, selectedIso, unitStacks]);
+  }, [
+    ready,
+    state,
+    size,
+    effectiveFill,
+    cities,
+    countries,
+    ownedByIso,
+    visibleProvinces,
+    playerIso,
+    selectedIso,
+    unitStacks,
+  ]);
 
   // Per-view update: apply transform + sync tile / city / country / highlight.
   useEffect(() => {

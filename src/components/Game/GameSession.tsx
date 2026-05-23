@@ -3,6 +3,7 @@ import { geoCentroid } from "d3-geo";
 import { WorldMap, type ProvinceHoverInfo } from "../Map/WorldMap";
 import { useMapData } from "../Map/useMapData";
 import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors";
+import { computeVisibility } from "../../lib/game/visibility";
 import type { Nation, World } from "../../lib/game/types";
 import {
   endTurn,
@@ -171,6 +172,25 @@ export function GameSession({
       cancelled = true;
     };
   }, []);
+
+  // Fog of war (Plan 09): which provinces the player is allowed to see in
+  // full, plus the set of allied nation IDs whose units are always visible.
+  // Filters enemy unit stacks in the unitStacks useMemo below; the WorldMap
+  // fog layer dims unscouted territory visually.
+  //
+  // Until adjacency is loaded, render with NO fog — otherwise the player
+  // briefly sees the entire enemy world hidden before the fetch resolves,
+  // which reads as a bug. computeVisibility's "observer mode" branch is
+  // exactly this (visibleProvinces = all, alliedNations = empty).
+  const visibility = useMemo(() => {
+    if (!adjacency) {
+      return {
+        visibleProvinces: new Set(world.provinces.map((p) => p.geometry_ref)),
+        alliedNations: new Set<string>(),
+      };
+    }
+    return computeVisibility(world, adjacency);
+  }, [world, adjacency]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -379,6 +399,19 @@ export function GameSession({
       if (!province) continue;
       const owner = world.nations.find((n) => n.id === u.owner);
       if (!owner) continue;
+
+      // Fog of war: skip stacks whose owner is NOT allied AND whose
+      // province is NOT in the player's visible set. Allied units stay
+      // visible everywhere (own + ally expeditionary forces). Pre-pick
+      // observer mode has alliedNations empty but visibleProvinces filled
+      // with everything, so the second condition still passes.
+      if (
+        !visibility.alliedNations.has(u.owner) &&
+        !visibility.visibleProvinces.has(province.geometry_ref)
+      ) {
+        continue;
+      }
+
       const key = province.geometry_ref;
       let bucket = byProvince.get(key);
       if (!bucket) {
@@ -417,7 +450,7 @@ export function GameSession({
       });
     }
     return stacks;
-  }, [world.units, world.provinces, world.nations, provinceCentroids]);
+  }, [world.units, world.provinces, world.nations, provinceCentroids, visibility]);
 
   const dockPanels = {
     orders: (
@@ -465,6 +498,7 @@ export function GameSession({
           playerIso={playerIso}
           selectedIso={selectedIso}
           ownedByIso={ownedByIso}
+          visibleProvinces={visibility.visibleProvinces}
           onProvinceHover={setHover}
           onProvinceClick={handleClick}
           unitStacks={unitStacks}

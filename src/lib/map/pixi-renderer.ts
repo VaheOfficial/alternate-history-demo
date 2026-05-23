@@ -54,6 +54,9 @@ export interface SceneHandles {
   tileContainer: Container;
   /** Child container of mapContainer — country fills (Graphics). */
   fillsContainer: Container;
+  /** Child container of mapContainer — fog overlay over unscouted provinces.
+   *  Sits ABOVE fills (so it dims the country color) but BELOW borders. */
+  fogContainer: Container;
   /** Child container of mapContainer — borders (Graphics). */
   bordersContainer: Container;
   /** Child container of mapContainer — country highlight outlines (Graphics). */
@@ -88,9 +91,15 @@ export async function createPixiScene(
   const mapContainer = new Container();
   const tileContainer = new Container();
   const fillsContainer = new Container();
+  const fogContainer = new Container();
+  fogContainer.eventMode = "none";
   const bordersContainer = new Container();
+  // Z-order (back→front): tiles, fills, fog, borders. Fog above fills so
+  // unscouted provinces visibly dim; below borders so the province lines
+  // stay crisp.
   mapContainer.addChild(tileContainer);
   mapContainer.addChild(fillsContainer);
+  mapContainer.addChild(fogContainer);
   mapContainer.addChild(bordersContainer);
   app.stage.addChild(mapContainer);
 
@@ -123,6 +132,7 @@ export async function createPixiScene(
     mapContainer,
     tileContainer,
     fillsContainer,
+    fogContainer,
     bordersContainer,
     highlightContainer,
     cityContainer,
@@ -242,6 +252,88 @@ export function buildPolygons(
     pixelLine: true,
   });
   bordersContainer.addChild(borders);
+}
+
+// ─── Fog of war ────────────────────────────────────────────────────────────
+
+export interface FogLayer {
+  container: Container;
+}
+
+export function createFogLayer(container: Container): FogLayer {
+  return { container };
+}
+
+/**
+ * Draw a dim overlay over every province NOT in `visibleSet`. The country
+ * mapcolor still shows through (geography is public knowledge in a 2026
+ * setting); the overlay just signals "you don't have eyes here". Unit
+ * stacks for unscouted provinces are filtered out separately upstream in
+ * GameSession — this is purely a visual hint.
+ *
+ * Implementation mirrors buildPolygons: project each province feature, take
+ * its rings, and `poly() + fill()` with a translucent black. We bail on
+ * provinces whose projected polygon spans the whole world (antimeridian
+ * artifact) for the same reason buildPolygons does.
+ */
+export function buildFog(
+  layer: FogLayer,
+  features: ProvinceFeature[],
+  visibleSet: Set<string>,
+  width: number,
+  height: number,
+): void {
+  for (const child of [...layer.container.children]) {
+    layer.container.removeChild(child);
+    child.destroy({ children: true });
+  }
+
+  const projection = geoEquirectangular()
+    .scale(width / (2 * Math.PI))
+    .translate([width / 2, height / 2])
+    .rotate([0, 0])
+    .center([0, 0]);
+  const collector = new RingCollector();
+  const path: GeoPath = geoPath(projection, collector as any);
+
+  const widthLimit = width * 0.95;
+  const heightLimit = height * 0.95;
+
+  const fog = new Graphics();
+  let polyCount = 0;
+  for (const f of features) {
+    const sid = String((f.properties as { shape_id?: string }).shape_id ?? "");
+    if (!sid || visibleSet.has(sid)) continue;
+
+    collector.reset();
+    path(f as any);
+    const rings = collector.rings.filter((r) => r.length >= 6);
+    if (rings.length === 0) continue;
+
+    // Antimeridian world-span guard.
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const r of rings) {
+      for (let i = 0; i < r.length; i += 2) {
+        if (r[i] < minX) minX = r[i];
+        if (r[i] > maxX) maxX = r[i];
+        if (r[i + 1] < minY) minY = r[i + 1];
+        if (r[i + 1] > maxY) maxY = r[i + 1];
+      }
+    }
+    if (maxX - minX >= widthLimit && maxY - minY >= heightLimit) continue;
+
+    for (const r of rings) fog.poly(r, true);
+    polyCount += rings.length;
+  }
+  if (polyCount > 0) {
+    // ~45% black overlay — subtle enough that country colors still read,
+    // distinct enough that "unscouted" is unambiguous.
+    fog.fill({ color: 0x000000, alpha: 0.45 });
+  }
+  layer.container.addChild(fog);
 }
 
 // ─── Country highlight (using pre-built outlines) ──────────────────────────
