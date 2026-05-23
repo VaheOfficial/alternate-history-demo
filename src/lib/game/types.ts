@@ -75,6 +75,7 @@ export interface Nation {
   relations: Record<string, number>;
   build_queue: unknown[];
   goals: string[];
+  factions?: Faction[];
 }
 
 export interface ResourceYield {
@@ -255,6 +256,19 @@ export interface CrisisOption {
   label: string;
   narrative: string;
   actions: unknown[];
+}
+
+export type FactionArchetype =
+  | "military"
+  | "business"
+  | "religious"
+  | "populist"
+  | "intellectual";
+
+export interface Faction {
+  archetype: FactionArchetype;
+  power: number;
+  satisfaction: number;
 }
 
 export interface Crisis {

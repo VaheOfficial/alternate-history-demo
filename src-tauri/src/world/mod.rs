@@ -4,6 +4,7 @@ pub mod clock;
 pub mod crisis;
 pub mod diplomacy;
 pub mod event;
+pub mod faction;
 pub mod frontline;
 pub mod ids;
 pub mod migration;

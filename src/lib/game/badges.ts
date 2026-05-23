@@ -31,6 +31,19 @@ export function computeBadges(world: World): Partial<Record<DockTab, BadgeSpec>>
     out.production = { level: "amber" };
   }
 
+  // Politics (Phase 3): elevate to red when any faction satisfaction <
+  // 20, amber when any < 50. Counts each unhappy faction.
+  const player = world.nations.find((n) => n.id === world.player_nation);
+  if (player?.factions && player.factions.length > 0) {
+    const veryUnhappy = player.factions.filter((f) => f.satisfaction < 20).length;
+    const unhappy = player.factions.filter((f) => f.satisfaction < 50).length;
+    if (veryUnhappy > 0) {
+      out.politics = { level: "red", count: veryUnhappy };
+    } else if (unhappy > 0) {
+      out.politics = { level: "amber", count: unhappy };
+    }
+  }
+
   // Crises / war / intelligence start empty — no badge until producers exist.
   // Diplomacy: a small info badge if there's at least one open channel
   // with unread NPC messages (any message after the player's last one).

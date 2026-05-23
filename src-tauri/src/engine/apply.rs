@@ -189,6 +189,22 @@ fn apply_one(
                 }
             }
 
+            // Plan 12 Phase 3 — Military faction loves war declarations
+            // on the aggressor side; Business + Populist drift unhappy.
+            apply_faction_shift(world, *aggressor, &[
+                (crate::world::faction::FactionArchetype::Military, 8),
+                (crate::world::faction::FactionArchetype::Business, -5),
+                (crate::world::faction::FactionArchetype::Populist, -3),
+            ]);
+            // The defender's people rally around the flag — Military +
+            // Populist satisfaction goes UP (defensive war), Business
+            // down (markets).
+            apply_faction_shift(world, *target, &[
+                (crate::world::faction::FactionArchetype::Military, 5),
+                (crate::world::faction::FactionArchetype::Populist, 4),
+                (crate::world::faction::FactionArchetype::Business, -4),
+            ]);
+
             // Plan 12 Phase 1: record the War on the world. If there's
             // already an active War record between the same parties,
             // don't duplicate.
@@ -235,6 +251,26 @@ fn apply_one(
                     extra_clauses: terms.extra_clauses.clone(),
                 },
             });
+
+            // Plan 12 Phase 3 — faction reactions to treaty kind.
+            use crate::world::faction::FactionArchetype as A;
+            use crate::world::treaty::TreatyKind as TK;
+            let shifts: &[(A, i8)] = match kind {
+                TK::TradeAgreement => {
+                    &[(A::Business, 8), (A::Populist, 3)]
+                }
+                TK::DefensivePact | TK::Alliance => {
+                    &[(A::Military, 6), (A::Business, 3)]
+                }
+                TK::PeaceTreaty | TK::Ceasefire => {
+                    &[(A::Populist, 6), (A::Business, 5), (A::Military, -4)]
+                }
+                TK::NonAggression => &[(A::Business, 4)],
+                TK::Vassalage => &[(A::Military, 6), (A::Populist, -5)],
+            };
+            for p in parties {
+                apply_faction_shift(world, *p, shifts);
+            }
             Ok(())
         }
         TypedAction::SpawnUnit {
@@ -283,6 +319,24 @@ fn apply_one(
                 return Err(format!("npc {} not found", target));
             }
             Ok(())
+        }
+    }
+}
+
+/// Plan 12 Phase 3 — Move faction satisfaction on the named nation.
+/// Clamps to [0, 100]. No-op if the nation or archetype isn't found.
+fn apply_faction_shift(
+    world: &mut World,
+    nation_id: crate::world::ids::NationId,
+    shifts: &[(crate::world::faction::FactionArchetype, i8)],
+) {
+    let Some(n) = world.nations.iter_mut().find(|n| n.id == nation_id) else {
+        return;
+    };
+    for (archetype, delta) in shifts {
+        if let Some(f) = n.factions.iter_mut().find(|f| f.archetype == *archetype) {
+            let v = f.satisfaction as i32 + *delta as i32;
+            f.satisfaction = v.clamp(0, 100) as u8;
         }
     }
 }

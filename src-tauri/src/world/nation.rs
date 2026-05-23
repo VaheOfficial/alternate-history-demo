@@ -131,6 +131,12 @@ pub struct Nation {
     /// as the LLM updates them through `NationTurn.goal_update`.
     #[serde(default)]
     pub goals: Vec<String>,
+
+    /// Internal factions (Plan 12 Phase 3). 3-5 entries seeded from
+    /// government type. Power + satisfaction shift as policy + war
+    /// outcomes happen.
+    #[serde(default)]
+    pub factions: Vec<crate::world::faction::Faction>,
 }
 
 fn default_map_color() -> u8 {
@@ -165,6 +171,7 @@ mod tests {
             relations: HashMap::new(),
             build_queue: Vec::new(),
             goals: vec!["test goal".into()],
+            factions: vec![],
         };
         let json = serde_json::to_string(&n).unwrap();
         let back: Nation = serde_json::from_str(&json).unwrap();

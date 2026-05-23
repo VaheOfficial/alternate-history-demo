@@ -157,6 +157,70 @@ fn goals_for(iso: &str) -> Vec<String> {
     ]
 }
 
+/// Seed 3-5 factions per nation based on government type. The mix is
+/// deliberately opinionated so Politics screen has flavor on day one —
+/// theocracies start with a powerful Religious bloc, democracies with
+/// a balanced Business/Intellectual/Populist mix, juntas heavily
+/// Military, etc.
+fn seed_factions(government: GovernmentType) -> Vec<crate::world::faction::Faction> {
+    use crate::world::faction::{Faction, FactionArchetype as A};
+    let entries: Vec<(A, u8, u8)> = match government {
+        GovernmentType::Democracy => vec![
+            (A::Business, 30, 55),
+            (A::Intellectual, 20, 60),
+            (A::Populist, 25, 50),
+            (A::Military, 15, 55),
+        ],
+        GovernmentType::Republic => vec![
+            (A::Business, 30, 50),
+            (A::Military, 25, 55),
+            (A::Intellectual, 20, 55),
+            (A::Populist, 20, 50),
+        ],
+        GovernmentType::Monarchy => vec![
+            (A::Military, 30, 60),
+            (A::Religious, 25, 60),
+            (A::Business, 25, 55),
+            (A::Populist, 15, 45),
+        ],
+        GovernmentType::Communist => vec![
+            (A::Military, 35, 55),
+            (A::Populist, 25, 55),
+            (A::Intellectual, 15, 50),
+            (A::Business, 5, 35),
+        ],
+        GovernmentType::Fascist => vec![
+            (A::Military, 45, 60),
+            (A::Business, 25, 55),
+            (A::Populist, 20, 50),
+        ],
+        GovernmentType::MilitaryJunta => vec![
+            (A::Military, 60, 60),
+            (A::Business, 20, 45),
+            (A::Religious, 10, 45),
+        ],
+        GovernmentType::Theocracy => vec![
+            (A::Religious, 55, 65),
+            (A::Military, 25, 55),
+            (A::Populist, 15, 50),
+        ],
+        GovernmentType::Other => vec![
+            (A::Military, 25, 50),
+            (A::Business, 25, 50),
+            (A::Populist, 25, 50),
+            (A::Intellectual, 15, 50),
+        ],
+    };
+    entries
+        .into_iter()
+        .map(|(archetype, power, satisfaction)| Faction {
+            archetype,
+            power,
+            satisfaction,
+        })
+        .collect()
+}
+
 /// Coarse doctrine pick — large land powers default to Mass Assault, naval /
 /// island states to Defense in Depth, technologically advanced western nations
 /// to Mobile Warfare, everyone else to Superior Firepower. Refinable later.
@@ -280,6 +344,7 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
             relations: HashMap::new(),
             build_queue: Vec::new(),
             goals: goals_for(iso),
+            factions: seed_factions(government_for(iso)),
         });
 
         nation_by_iso.insert(iso.clone(), nation_id);
