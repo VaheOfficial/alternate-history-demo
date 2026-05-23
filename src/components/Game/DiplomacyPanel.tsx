@@ -44,6 +44,7 @@ export function DiplomacyPanel({
   const [error, setError] = useState<string | null>(null);
   const [picker, setPicker] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [pickerQuery, setPickerQuery] = useState("");
 
   const noProvider = providers.length === 0;
   const playerNation = world.player_nation
@@ -61,15 +62,26 @@ export function DiplomacyPanel({
     return m;
   }, [world.nations]);
 
-  // Candidates for "new channel" picker: every nation except the player.
-  // Sorted by industry descending so big powers appear first.
+  // Candidates for "new channel" picker. Every non-player nation, sorted by
+  // industry descending so big powers appear first when the search is
+  // empty. With a query, we filter by name / ISO3 (case-insensitive
+  // substring) AND drop the industry-top-60 cap so deep-cuts surface
+  // (e.g. searching "tonga" still finds Tonga).
   const candidates = useMemo(() => {
-    return world.nations
+    const q = pickerQuery.trim().toLowerCase();
+    const base = world.nations
       .filter((n) => n.id !== world.player_nation)
       .slice()
-      .sort((a, b) => b.industry_capacity - a.industry_capacity)
-      .slice(0, 60);
-  }, [world.nations, world.player_nation]);
+      .sort((a, b) => b.industry_capacity - a.industry_capacity);
+    if (!q) return base.slice(0, 60);
+    return base
+      .filter(
+        (n) =>
+          n.name.toLowerCase().includes(q) ||
+          n.iso_a3.toLowerCase().includes(q),
+      )
+      .slice(0, 80);
+  }, [world.nations, world.player_nation, pickerQuery]);
 
   const handleOpenChannel = async () => {
     if (!playerNation || picked.size === 0) return;
@@ -83,6 +95,7 @@ export function DiplomacyPanel({
         newWorld.diplomatic_channels[newWorld.diplomatic_channels.length - 1];
       setOpenChannelId(created?.id ?? null);
       setPicked(new Set());
+      setPickerQuery("");
       setPicker(false);
     } catch (e) {
       setError(String(e));
@@ -215,12 +228,26 @@ export function DiplomacyPanel({
                   onClick={() => {
                     setPicker(false);
                     setPicked(new Set());
+                    setPickerQuery("");
                   }}
                   style={pickerCloseBtn}
                 >
                   ×
                 </button>
               </div>
+              <input
+                type="search"
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                placeholder="Search by name or ISO3 (e.g. “Japan”, “JPN”)…"
+                style={pickerSearchStyle}
+                autoFocus
+              />
+              {candidates.length === 0 && (
+                <div style={pickerEmptyStyle}>
+                  No nations match "{pickerQuery}".
+                </div>
+              )}
               <div style={candidateListStyle}>
                 {candidates.map((n) => {
                   const sel = picked.has(n.id);
@@ -598,6 +625,25 @@ const pickerCloseBtn: React.CSSProperties = {
   color: "var(--fg-muted)",
   cursor: "pointer",
   fontSize: 18,
+};
+
+const pickerSearchStyle: React.CSSProperties = {
+  boxSizing: "border-box",
+  width: "100%",
+  fontFamily: "var(--font-sans)",
+  fontSize: "var(--fs-sm)",
+  background: "var(--surface-2)",
+  color: "var(--fg)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-sm)",
+  padding: "6px 10px",
+};
+
+const pickerEmptyStyle: React.CSSProperties = {
+  color: "var(--fg-muted)",
+  fontSize: "var(--fs-xs)",
+  padding: "8px 4px 0",
+  fontStyle: "italic",
 };
 
 const candidateListStyle: React.CSSProperties = {
