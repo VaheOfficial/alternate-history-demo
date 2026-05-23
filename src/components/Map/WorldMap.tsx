@@ -32,10 +32,6 @@ import {
 } from "../../lib/map/pixi-renderer";
 import { loadCities, type City } from "../../lib/map/cities";
 import { loadCountries, type Country } from "../../lib/map/countries";
-import {
-  loadCountryOutlines,
-  type CountryOutlineIndex,
-} from "../../lib/map/country-outlines";
 import { buildProvinceIndex, pickProvince, type ProvinceIndex } from "../../lib/map/hit-test";
 
 const COLORS = {
@@ -75,6 +71,7 @@ export function WorldMap({
   ownershipColors,
   playerIso,
   selectedIso,
+  ownedByIso,
   onProvinceHover,
   onProvinceClick,
   unitStacks,
@@ -84,8 +81,15 @@ export function WorldMap({
   playerIso?: string | null;
   /** ISO3 of a currently-clicked country — outlined transiently. */
   selectedIso?: string | null;
+  /**
+   * Live ownership map: ISO3 → set of shape_ids currently owned by that
+   * nation. Drives the country-outline highlight, replacing the
+   * baked-at-build-time outline file so newly-conquered territory
+   * extends the highlight ring.
+   */
+  ownedByIso?: Map<string, Set<string>>;
   onProvinceHover?: (info: ProvinceHoverInfo | null) => void;
-  onProvinceClick?: (shape_id: string) => void;
+  onProvinceClick?: (shape_id: string, modifiers: { shift: boolean }) => void;
   /** Per-province unit stack data — drawn as small circles with count badges. */
   unitStacks?: Array<{
     lon: number;
@@ -113,16 +117,14 @@ export function WorldMap({
   const [ready, setReady] = useState(false);
   const [cities, setCities] = useState<City[] | null>(null);
   const [countries, setCountries] = useState<Country[] | null>(null);
-  const [outlines, setOutlines] = useState<CountryOutlineIndex | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([loadCities(), loadCountries(), loadCountryOutlines()])
-      .then(([c, cs, os]) => {
+    Promise.all([loadCities(), loadCountries()])
+      .then(([c, cs]) => {
         if (cancelled) return;
         setCities(c);
         setCountries(cs);
-        setOutlines(os);
       })
       .catch(() => {
         // fall through with no labels
@@ -226,39 +228,39 @@ export function WorldMap({
     if (countries) buildCountryLabels(countryLayer, countries, size.w, size.h);
     indexRef.current = buildProvinceIndex(state.data.features, size.w, size.h);
 
-    // Outer-boundary highlight using pre-built per-country outlines.
-    // Internal province borders are gone-by-construction (mapshaper
-    // dissolves on adm0_a3 during the build).
-    if (outlines) {
-      buildCountryHighlight(
-        highlightLayer,
-        outlines,
-        size.w,
-        size.h,
-        [
-          ...(playerIso
-            ? [
-                {
-                  iso_a3: playerIso,
-                  color: "#7aa2f7",
-                  baseWidth: 3.0,
-                  alpha: 0.95,
-                },
-              ]
-            : []),
-          ...(selectedIso
-            ? [
-                {
-                  iso_a3: selectedIso,
-                  color: "#f5d76e",
-                  baseWidth: 2.6,
-                  alpha: 0.95,
-                },
-              ]
-            : []),
-        ],
-      );
-    }
+    // Outer-boundary highlight, computed live from current ownership so
+    // conquered territory immediately extends the ring. Internal segments
+    // between two co-owned provinces are filtered out via segment-count
+    // dissolve inside buildCountryHighlight.
+    buildCountryHighlight(
+      highlightLayer,
+      state.data.features,
+      ownedByIso ?? new Map(),
+      size.w,
+      size.h,
+      [
+        ...(playerIso
+          ? [
+              {
+                iso_a3: playerIso,
+                color: "#7aa2f7",
+                baseWidth: 3.0,
+                alpha: 0.95,
+              },
+            ]
+          : []),
+        ...(selectedIso
+          ? [
+              {
+                iso_a3: selectedIso,
+                color: "#f5d76e",
+                baseWidth: 2.6,
+                alpha: 0.95,
+              },
+            ]
+          : []),
+      ],
+    );
 
     resetTiles(tiles, worldExtentAtBase(size.w, size.h));
     const clamped = clampToWorld(view, size);
@@ -278,7 +280,7 @@ export function WorldMap({
     updateCountryLabels(countryLayer, applyV, { w: size.w, h: size.h });
     updateCountryHighlight(highlightLayer, applyV);
     updateUnits(unitLayer, applyV, { w: size.w, h: size.h });
-  }, [ready, state, size, effectiveFill, cities, countries, outlines, playerIso, selectedIso, unitStacks]);
+  }, [ready, state, size, effectiveFill, cities, countries, ownedByIso, playerIso, selectedIso, unitStacks]);
 
   // Per-view update: apply transform + sync tile / city / country / highlight.
   useEffect(() => {
@@ -365,7 +367,7 @@ export function WorldMap({
     const wx = (sx - viewRef.current.panX) / viewRef.current.zoom;
     const wy = (sy - viewRef.current.panY) / viewRef.current.zoom;
     const sid = pickProvince(idx, wx, wy);
-    if (sid) onProvinceClick(sid);
+    if (sid) onProvinceClick(sid, { shift: e.shiftKey });
   };
 
   const onMouseLeave = () => {

@@ -15,7 +15,8 @@ import type { ProvinceFeature } from "./types";
 import { worldExtentAtBase } from "./renderer";
 import type { City, CityKind } from "./cities";
 import type { Country } from "./countries";
-import type { CountryOutlineFeature } from "./country-outlines";
+// CountryOutlineFeature import dropped — buildCountryHighlight now computes
+// the outline live from current ownership instead of loading the baked file.
 
 /**
  * A geoPath context that captures projected polygon rings as flat number
@@ -216,15 +217,18 @@ export function buildPolygons(
     }
   }
 
-  const fills = new Graphics();
+  // One Graphics object per fill color so PIXI v8 batches them cleanly.
+  // (Using one Graphics with multiple poly+fill cycles can drop fills on some
+  // GPU drivers — keep it simple.)
   for (const [color, rings] of ringsByColor) {
     const { rgb } = hexToInt(color);
+    const g = new Graphics();
     for (const r of rings) {
-      fills.poly(r, true);
+      g.poly(r, true);
     }
-    fills.fill({ color: rgb, alpha: opts.fillAlpha });
+    g.fill({ color: rgb, alpha: opts.fillAlpha });
+    fillsContainer.addChild(g);
   }
-  fillsContainer.addChild(fills);
 
   const borders = new Graphics();
   for (const r of allBorderRings) {
@@ -274,20 +278,29 @@ export function createHighlightLayer(container: Container): HighlightLayer {
 }
 
 /**
- * Project a country's pre-built outline polygon into canvas-pixel rings.
+ * Live country-outline builder driven by the CURRENT ownership map, not the
+ * baked-at-pipeline-time `country-outlines.geojson` file. This is what makes
+ * the player + selected-nation highlight grow when you conquer a new
+ * province — the old path looked up a pre-dissolved polygon by ISO3 and so
+ * it never reflected post-launch territory changes.
  *
- * Each ring (multi-polygon countries have several) gets stored as a flat
- * Float32Array. `updateCountryHighlight` then applies the current view's
- * pan+zoom and strokes it per-frame with a screen-pixel width that shrinks
- * as the user zooms in.
+ * Outline computation: for every province owned by the target nation, walk
+ * its projected ring segments. A segment that appears EXACTLY ONCE across
+ * the owned set is on the country's outer boundary; a segment that appears
+ * twice (or more) is an internal province border between two co-owned
+ * provinces and gets dropped. We stroke only the boundary segments, so the
+ * result is visually equivalent to the old dissolved outline.
  *
- * Using pre-built outlines (one MultiPolygon per ISO3 in `country-outlines.
- * geojson`, produced by mapshaper -dissolve2 adm0_a3) means no internal
- * borders ever appear — there's literally nothing to filter.
+ * Segments are hashed in projected pixel space rounded to the nearest 0.01
+ * pixel — floating-point noise from d3-geo's antimeridian splitting won't
+ * cause two-coincident segments to look distinct. Each segment is stored as
+ * a 2-point polyline (Float32Array(4)); `updateCountryHighlight` redraws
+ * them per view tick.
  */
 export function buildCountryHighlight(
   layer: HighlightLayer,
-  outlinesByIso: Map<string, CountryOutlineFeature>,
+  features: ProvinceFeature[],
+  ownedByIso: Map<string, Set<string>>,
   width: number,
   height: number,
   groups: HighlightGroupInput[],
@@ -308,17 +321,58 @@ export function buildCountryHighlight(
   const collector = new RingCollector();
   const path: GeoPath = geoPath(projection, collector as any);
 
+  // Index features by shape_id once so we don't re-scan the whole array
+  // for each group.
+  const featureByShapeId = new Map<string, ProvinceFeature>();
+  for (const f of features) {
+    const sid = String((f.properties as { shape_id?: string }).shape_id ?? "");
+    if (sid) featureByShapeId.set(sid, f);
+  }
+
   for (const group of groups) {
     if (!group.iso_a3) continue;
-    const feature = outlinesByIso.get(group.iso_a3);
-    if (!feature) continue;
+    const owned = ownedByIso.get(group.iso_a3);
+    if (!owned || owned.size === 0) continue;
     const { rgb } = hexToInt(group.color);
 
-    collector.reset();
-    path(feature as any);
-    const rings = collector.rings
-      .filter((r) => r.length >= 6)
-      .map((r) => new Float32Array(r));
+    // First pass — count every segment across all owned provinces.
+    const segCount = new Map<string, number>();
+    const segCoords = new Map<string, [number, number, number, number]>();
+    for (const sid of owned) {
+      const f = featureByShapeId.get(sid);
+      if (!f) continue;
+      collector.reset();
+      path(f as any);
+      for (const ring of collector.rings) {
+        if (ring.length < 6) continue;
+        for (let i = 0; i + 3 < ring.length; i += 2) {
+          const ax = Math.round(ring[i] * 100) / 100;
+          const ay = Math.round(ring[i + 1] * 100) / 100;
+          const bx = Math.round(ring[i + 2] * 100) / 100;
+          const by = Math.round(ring[i + 3] * 100) / 100;
+          if (ax === bx && ay === by) continue;
+          // Canonical key — order endpoints so (a,b) and (b,a) hash equal.
+          const aFirst =
+            ax < bx || (ax === bx && ay < by);
+          const key = aFirst
+            ? `${ax},${ay}|${bx},${by}`
+            : `${bx},${by}|${ax},${ay}`;
+          segCount.set(key, (segCount.get(key) ?? 0) + 1);
+          if (!segCoords.has(key)) {
+            segCoords.set(key, [ax, ay, bx, by]);
+          }
+        }
+      }
+    }
+
+    // Second pass — keep boundary segments (count === 1).
+    const rings: Float32Array[] = [];
+    for (const [key, count] of segCount) {
+      if (count !== 1) continue;
+      const coords = segCoords.get(key);
+      if (!coords) continue;
+      rings.push(new Float32Array(coords));
+    }
     if (rings.length === 0) continue;
 
     const g = new Graphics();

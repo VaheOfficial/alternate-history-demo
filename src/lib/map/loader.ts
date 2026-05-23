@@ -7,12 +7,22 @@ interface TopoMaybe {
 }
 
 /**
- * Pick a stable id for a Natural Earth admin-1 feature. Must mirror the
- * server-side logic in scripts/lib/extract-meta.ts so meta and topology join cleanly.
- * adm1_code is preferred because it's always unique per feature, whereas iso_3166_2
- * is shared across multi-polygon subdivisions and would cause collisions.
+ * Pick a stable id for a Natural Earth admin-1 feature. MUST mirror the
+ * server-side logic in scripts/lib/extract-meta.ts so meta and topology join
+ * cleanly:
+ *   1. merge_group  (cluster-step's tile-balancing key, e.g. "ARG|ARG-1309")
+ *      — this is what world-meta.json uses as `shape_id`, so the topology
+ *        feature MUST resolve to the same string.
+ *   2. adm1_code    (e.g. "ARG-1309") — only used when no merge_group exists.
+ *   3. iso_3166_2 / gn_id / a3+index — defensive fallbacks.
+ *
+ * If you change this, change extract-meta.ts in lockstep — otherwise polygons
+ * stop matching world.provinces[].geometry_ref, fills disappear, hovers stop
+ * resolving, and the map looks like a flat satellite background.
  */
 function pickShapeId(p: Record<string, unknown>, index: number): string {
+  const mg = String(p.merge_group ?? "");
+  if (mg && mg !== "-99" && mg !== "") return mg;
   const code = String(p.adm1_code ?? "");
   if (code && code !== "-99" && code !== "") return code;
   const iso = String(p.iso_3166_2 ?? "");
