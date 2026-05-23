@@ -85,6 +85,8 @@ pub fn run() {
             commands::game::close_diplomatic_channel_cmd,
             commands::game::send_diplomatic_message_cmd,
             commands::game::enact_diplomatic_proposal_cmd,
+            commands::game::concede_run_cmd,
+            commands::game::victory_progress_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

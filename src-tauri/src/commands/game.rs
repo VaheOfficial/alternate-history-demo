@@ -5,9 +5,10 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::engine::{
-    advance_clock, apply_actions, apply_production, resolve_movement, run_economy_tick,
-    run_npc_turn, tick_pending, ApplyOutcome, MovementOutcome, NpcTurnResult,
-    ProductionOutcome, ProductionRequest,
+    advance_clock, apply_actions, apply_production, check_victory, compute_progress,
+    mark_concluded, resolve_movement, run_economy_tick, run_npc_turn, tick_pending,
+    ApplyOutcome, MovementOutcome, NpcTurnResult, ProductionOutcome, ProductionRequest,
+    VictoryProgress,
 };
 use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
 use crate::world::diplomacy::{ChannelStatus, DiplomaticChannel, DiplomaticMessage};
@@ -23,11 +24,34 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
+    // If the run has already concluded, skip the turn machinery. Frontend
+    // should be hiding End Turn at this point but we defend anyway.
+    if world.victory.is_some() {
+        return Ok(world);
+    }
     let mut advanced = advance_clock(world, days);
     run_economy_tick(&mut advanced, days.max(1));
     tick_pending(&mut advanced);
+    check_victory(&mut advanced);
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
+}
+
+/// Player explicitly concludes the run from the Menu. Stamps
+/// `world.victory = Some(Concluded)` and persists.
+#[tauri::command]
+pub async fn concede_run_cmd(world: World) -> Result<World> {
+    let mut mutable = world;
+    mark_concluded(&mut mutable);
+    save_snapshot(mutable.clone()).await?;
+    Ok(mutable)
+}
+
+/// Compute the player's progress toward each victory condition for
+/// HUD display. Pure function, no persistence.
+#[tauri::command]
+pub fn victory_progress_cmd(world: World) -> Result<VictoryProgress> {
+    Ok(compute_progress(&world))
 }
 
 // ─── Combat MVP ─────────────────────────────────────────────────────────────

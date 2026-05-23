@@ -186,6 +186,27 @@ export interface World {
   pending: PendingAction[];
   battle_plans: BattlePlan[];
   diplomatic_channels: DiplomaticChannel[];
+  victory?: Victory | null;
+}
+
+export type VictoryKind =
+  | "hegemon"
+  | "universal_empire"
+  | "survivor"
+  | "concluded";
+
+export interface Victory {
+  kind: VictoryKind;
+  triggered_on: string;
+  headline: string;
+  summary: string;
+}
+
+export interface VictoryProgress {
+  pop_pct: number;
+  ind_pct: number;
+  remaining_rivals: number;
+  days_to_2050: number;
 }
 
 export interface SaveSummary {

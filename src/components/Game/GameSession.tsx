@@ -6,14 +6,17 @@ import { buildOwnershipColors, findProvinceByShape } from "../../lib/game/colors
 import { computeVisibility } from "../../lib/game/visibility";
 import type { Nation, World } from "../../lib/game/types";
 import {
+  concedeRun,
   createBattlePlan,
   endTurn,
   moveUnit,
   runNpcTurn,
+  victoryProgress as fetchVictoryProgress,
   type NationTurn,
   type NpcTurnResult,
   type OrchestratorPick,
 } from "../../lib/game/tauri";
+import type { VictoryProgress } from "../../lib/game/types";
 import { listProviderConfigs, listModels } from "../../lib/tauri";
 import type { ProviderConfig } from "../../lib/types";
 import { AdvisorPanel } from "./AdvisorPanel";
@@ -25,6 +28,7 @@ import { OrderQueuePanel } from "./OrderQueuePanel";
 import { SavesPanel } from "./SavesPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { TurnSummaryModal, type EconomyDelta } from "./TurnSummaryModal";
+import { VictoryModal } from "./VictoryModal";
 import { CommandDock, type DockTab } from "./CommandDock";
 import { PoliticsScreen } from "./screens/PoliticsScreen";
 import { ResearchScreen } from "./screens/ResearchScreen";
@@ -52,6 +56,35 @@ export function GameSession({
   const [turnError, setTurnError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DockTab>("orders");
   const [dockCollapsed, setDockCollapsed] = useState(false);
+  const [victoryDismissed, setVictoryDismissed] = useState(false);
+  const [progress, setProgress] = useState<VictoryProgress | null>(null);
+
+  // Recompute victory progress whenever the world changes. Cheap — pure
+  // arithmetic over nations + treaties on the Rust side, no LLM.
+  useEffect(() => {
+    fetchVictoryProgress(world)
+      .then(setProgress)
+      .catch(() => setProgress(null));
+  }, [world]);
+
+  // If a fresh victory just appeared on the world, surface the modal.
+  useEffect(() => {
+    if (world.victory) setVictoryDismissed(false);
+  }, [world.victory]);
+
+  const handleConcede = useCallback(async () => {
+    // No confirm dialog yet — design rule says we're not pushy. The Menu
+    // dropdown already says "Concede this run…" with the ellipsis, and
+    // the player can dismiss the resulting modal with Esc to keep
+    // looking at the map. If we add a confirm later, do it via the
+    // existing AskUserQuestion modal pattern, not browser confirm().
+    try {
+      const next = await concedeRun(world);
+      setWorld(next);
+    } catch (e) {
+      setTurnError(String(e));
+    }
+  }, [world]);
 
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [providerId, setProviderId] = useState<string>("");
@@ -572,8 +605,11 @@ export function GameSession({
         pending={world.pending ?? []}
         busy={busy}
         pacingHint={pacingHint}
+        victoryProgress={progress}
+        hasVictory={!!world.victory}
         onEndTurn={handleEndTurn}
         onExit={onExit}
+        onConcede={handleConcede}
         onOpenPlayerPanel={() => {
           if (playerNation) setSelectedNation(playerNation.id);
         }}
@@ -672,6 +708,12 @@ export function GameSession({
               // or Escape when done.
               setSelectedNation(nationId);
             }}
+          />
+        )}
+        {world.victory && !victoryDismissed && (
+          <VictoryModal
+            victory={world.victory}
+            onClose={() => setVictoryDismissed(true)}
           />
         )}
       </div>

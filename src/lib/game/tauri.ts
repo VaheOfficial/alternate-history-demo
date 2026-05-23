@@ -287,3 +287,15 @@ export function sendDiplomaticMessage(
     message,
   });
 }
+
+// ─── Victory (Plan 12 Phase 6) ─────────────────────────────────────────────
+
+import type { VictoryProgress } from "./types";
+
+export function concedeRun(world: World) {
+  return invoke<World>("concede_run_cmd", { world });
+}
+
+export function victoryProgress(world: World) {
+  return invoke<VictoryProgress>("victory_progress_cmd", { world });
+}

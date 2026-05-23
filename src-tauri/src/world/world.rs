@@ -5,6 +5,7 @@ use super::battle_plan::BattlePlan;
 use super::clock::GameClock;
 use super::crisis::Crisis;
 use super::diplomacy::DiplomaticChannel;
+use super::victory::Victory;
 use super::event::Event;
 use super::frontline::Frontline;
 use super::ids::{BranchId, NationId, SaveId};
@@ -42,6 +43,11 @@ pub struct World {
     /// `world::diplomacy::DiplomaticChannel` and Plan 11.
     #[serde(default)]
     pub diplomatic_channels: Vec<DiplomaticChannel>,
+    /// Set once an end-condition triggers (hegemon / universal empire /
+    /// 2050 survivor / player conceded). When `Some`, end-turn stops
+    /// advancing and the UI shows the victory modal.
+    #[serde(default)]
+    pub victory: Option<Victory>,
 }
 
 impl World {
@@ -65,6 +71,7 @@ impl World {
             pending: vec![],
             battle_plans: vec![],
             diplomatic_channels: vec![],
+            victory: None,
         }
     }
 }

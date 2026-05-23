@@ -1,4 +1,5 @@
-import type { Nation, PendingAction } from "../../lib/game/types";
+import { useEffect, useRef, useState } from "react";
+import type { Nation, PendingAction, VictoryProgress } from "../../lib/game/types";
 import { colorForMapcolor } from "../../lib/map/renderer";
 import { TurnControls } from "./TurnControls";
 import {
@@ -7,6 +8,7 @@ import {
   GearIcon,
   HeartbeatIcon,
   FistIcon,
+  CrownIcon,
 } from "../ui/Icon";
 
 export function HudTopBar({
@@ -16,10 +18,13 @@ export function HudTopBar({
   pending,
   busy,
   pacingHint,
+  victoryProgress,
   onEndTurn,
   onExit,
+  onConcede,
   onOpenPlayerPanel,
   error,
+  hasVictory,
 }: {
   date: string;
   round: number;
@@ -27,17 +32,82 @@ export function HudTopBar({
   pending: PendingAction[];
   busy: boolean;
   pacingHint: number | null;
+  /** Hegemon/empire/2050 progress. Null while loading or no player. */
+  victoryProgress: VictoryProgress | null;
   onEndTurn: (days: number) => void;
   onExit: () => void;
+  /** Player picks "Concede this run" from the Menu dropdown. */
+  onConcede: () => void;
   onOpenPlayerPanel: () => void;
   error: string | null;
+  /** When true the End Turn cluster is replaced with a stamped banner. */
+  hasVictory: boolean;
 }) {
+  // Menu dropdown — small in-place menu off the ← Menu button. Closes on
+  // outside-click and on Escape.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
   return (
     <div style={topBarStyle}>
       <div style={leftClusterStyle}>
-        <button onClick={onExit} style={menuButtonStyle} className="ahd-press">
-          ← Menu
-        </button>
+        <div style={{ position: "relative" }} ref={menuRef}>
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            style={menuButtonStyle}
+            className="ahd-press"
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
+          >
+            ← Menu ▾
+          </button>
+          {menuOpen && (
+            <div style={menuDropdownStyle} role="menu">
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onExit();
+                }}
+                style={menuItemStyle}
+                role="menuitem"
+              >
+                Back to landing
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onConcede();
+                }}
+                style={{ ...menuItemStyle, color: "var(--danger)" }}
+                role="menuitem"
+                disabled={hasVictory}
+                title={
+                  hasVictory
+                    ? "The run has already ended."
+                    : "End this run. The world freezes at this date and the chronicle becomes available."
+                }
+              >
+                Concede this run…
+              </button>
+            </div>
+          )}
+        </div>
         {playerNation && (
           <button
             onClick={onOpenPlayerPanel}
@@ -83,7 +153,25 @@ export function HudTopBar({
       </div>
 
       <div style={rightClusterStyle}>
-        <TurnControls busy={busy} pacingHint={pacingHint} onEndTurn={onEndTurn} />
+        {victoryProgress && (
+          <div
+            style={progressChipStyle}
+            title={`Pop ${victoryProgress.pop_pct.toFixed(1)}% · Industry ${victoryProgress.ind_pct.toFixed(1)}% · ${victoryProgress.remaining_rivals} rival${victoryProgress.remaining_rivals === 1 ? "" : "s"} remaining · ${victoryProgress.days_to_2050} days to 2050`}
+          >
+            <span style={progressChipIconStyle}>
+              <CrownIcon />
+            </span>
+            <span style={{ fontSize: "var(--fs-xs)", letterSpacing: "0.04em" }}>
+              POP {Math.round(victoryProgress.pop_pct)}% · IND{" "}
+              {Math.round(victoryProgress.ind_pct)}%
+            </span>
+          </div>
+        )}
+        {hasVictory ? (
+          <div style={victoryStampStyle}>RUN ENDED</div>
+        ) : (
+          <TurnControls busy={busy} pacingHint={pacingHint} onEndTurn={onEndTurn} />
+        )}
       </div>
       {pending.length > 0 && (
         <div style={pendingStripStyle} title={`${pending.length} ongoing operation${pending.length === 1 ? "" : "s"}`}>
@@ -180,6 +268,66 @@ const menuButtonStyle: React.CSSProperties = {
   fontFamily: "inherit",
   fontSize: "var(--fs-sm)",
   fontWeight: 500,
+};
+
+const menuDropdownStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 6px)",
+  left: 0,
+  background:
+    "linear-gradient(180deg, rgba(20, 23, 30, 0.98), rgba(15, 17, 21, 0.98))",
+  border: "1px solid var(--border-strong)",
+  borderRadius: "var(--radius-md)",
+  boxShadow: "0 12px 36px rgba(0, 0, 0, 0.45)",
+  minWidth: 200,
+  padding: 6,
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  zIndex: 30,
+};
+
+const menuItemStyle: React.CSSProperties = {
+  textAlign: "left",
+  background: "transparent",
+  border: "1px solid transparent",
+  borderRadius: "var(--radius-sm)",
+  padding: "8px 10px",
+  color: "var(--fg)",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  fontSize: "var(--fs-sm)",
+};
+
+const progressChipStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "5px 10px",
+  background:
+    "linear-gradient(160deg, rgba(245, 215, 110, 0.18), rgba(245, 215, 110, 0.05))",
+  color: "var(--fg)",
+  border: "1px solid rgba(245, 215, 110, 0.45)",
+  borderRadius: 999,
+  fontWeight: 700,
+  cursor: "default",
+};
+
+const progressChipIconStyle: React.CSSProperties = {
+  display: "inline-flex",
+  color: "#f5d76e",
+  lineHeight: 0,
+};
+
+const victoryStampStyle: React.CSSProperties = {
+  display: "inline-block",
+  padding: "8px 14px",
+  background: "#f5d76e",
+  color: "#0c1322",
+  borderRadius: "var(--radius-md)",
+  fontWeight: 800,
+  letterSpacing: "0.08em",
+  fontSize: "var(--fs-xs)",
 };
 
 const playerBadgeStyle: React.CSSProperties = {
