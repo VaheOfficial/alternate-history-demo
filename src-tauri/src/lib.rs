@@ -93,6 +93,8 @@ pub fn run() {
             commands::game::queue_build_cmd,
             commands::game::cancel_build_cmd,
             commands::game::set_research_target_cmd,
+            commands::game::start_spy_mission_cmd,
+            commands::game::dismiss_spy_mission_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

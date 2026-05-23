@@ -8,12 +8,13 @@ use crate::engine::{
     accept_peace_proposal, advance_clock, apply_actions, apply_production, check_victory,
     compute_progress, mark_concluded, reject_peace_proposal, resolve_crisis,
     resolve_movement, run_economy_tick, run_npc_turn, tick_crises, tick_pending,
-    tick_production_queue, tick_research, tick_wars, unit_cost, ApplyOutcome,
+    tick_production_queue, tick_research, tick_spy, tick_wars, unit_cost, ApplyOutcome,
     MovementOutcome, NpcTurnResult, ProductionOutcome, ProductionRequest, VictoryProgress,
 };
 use crate::world::ids::CrisisId;
 use crate::world::nation::UnitType;
 use crate::world::production_queue::ProductionOrder;
+use crate::world::spy::{SpyMission, SpyMissionKind};
 use crate::world::tech::TechId;
 use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
 use crate::world::diplomacy::{ChannelStatus, DiplomaticChannel, DiplomaticMessage};
@@ -39,6 +40,7 @@ pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     tick_pending(&mut advanced);
     tick_production_queue(&mut advanced);
     tick_research(&mut advanced);
+    tick_spy(&mut advanced);
     tick_wars(&mut advanced);
     tick_crises(&mut advanced);
     check_victory(&mut advanced);
@@ -102,6 +104,51 @@ pub async fn set_research_target_cmd(
     if let Some(n) = mutable.nations.iter_mut().find(|n| n.id == player) {
         n.research.target = target;
     }
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+// ─── Plan 12 Phase 5 — espionage commands ─────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct StartSpyMissionRequest {
+    pub target: crate::world::ids::NationId,
+    pub kind: SpyMissionKind,
+    pub tech_target: Option<TechId>,
+}
+
+#[tauri::command]
+pub async fn start_spy_mission_cmd(
+    world: World,
+    request: StartSpyMissionRequest,
+) -> Result<World> {
+    let mut mutable = world;
+    if mutable.player_nation.is_none() {
+        return Err(AppError::InvalidArgument("no player nation set".into()));
+    }
+    let started_on = mutable.clock.current_date;
+    let resolves_on = started_on
+        .checked_add_signed(chrono::Duration::days(request.kind.days_to_resolve()))
+        .unwrap_or(started_on);
+    mutable.spy_missions.push(SpyMission {
+        id: Uuid::new_v4().to_string(),
+        target: request.target,
+        kind: request.kind,
+        started_on,
+        resolves_on,
+        success_pct: request.kind.base_success_pct(),
+        tech_target: request.tech_target,
+        resolved: false,
+        outcome: None,
+    });
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+#[tauri::command]
+pub async fn dismiss_spy_mission_cmd(world: World, mission_id: String) -> Result<World> {
+    let mut mutable = world;
+    mutable.spy_missions.retain(|m| m.id != mission_id || !m.resolved);
     let _ = save_snapshot(mutable.clone()).await;
     Ok(mutable)
 }

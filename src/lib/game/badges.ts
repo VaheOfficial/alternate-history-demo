@@ -90,6 +90,19 @@ export function computeBadges(world: World): Partial<Record<DockTab, BadgeSpec>>
     out.plans = { level: "amber", count: planned };
   }
 
+  // Intelligence (Phase 5): info badge for active missions, amber when
+  // a new completed report is sitting unread (resolved but not yet
+  // dismissed via the screen — we approximate by counting resolved
+  // missions whose outcome exists).
+  const missions = world.spy_missions ?? [];
+  const activeMissions = missions.filter((m) => !m.resolved).length;
+  const unreadReports = missions.filter((m) => m.resolved && m.outcome).length;
+  if (unreadReports > 0) {
+    out.intelligence = { level: "amber", count: unreadReports };
+  } else if (activeMissions > 0) {
+    out.intelligence = { level: "info", count: activeMissions };
+  }
+
   // Crises: red dot with the count of unresolved decision cards.
   const unresolved = (world.crises ?? []).filter((c) => !c.resolved).length;
   if (unresolved > 0) {

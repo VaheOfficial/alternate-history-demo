@@ -55,6 +55,9 @@ pub struct World {
     /// Per-player production orders. Plan 12 Phase 4.
     #[serde(default)]
     pub production_orders: Vec<super::production_queue::ProductionOrder>,
+    /// Spy missions (Plan 12 Phase 5). v1 only player-initiated.
+    #[serde(default)]
+    pub spy_missions: Vec<super::spy::SpyMission>,
 }
 
 impl World {
@@ -81,6 +84,7 @@ impl World {
             victory: None,
             wars: vec![],
             production_orders: vec![],
+            spy_missions: vec![],
         }
     }
 }

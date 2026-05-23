@@ -454,6 +454,7 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
         victory: None,
         wars: vec![],
         production_orders: vec![],
+        spy_missions: vec![],
     }
 }
 

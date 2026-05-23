@@ -589,7 +589,7 @@ export function GameSession({
     production: <ProductionScreen world={world} onWorldUpdate={setWorld} />,
     war: <WarScreen world={world} onWorldUpdate={setWorld} />,
     crises: <CrisesScreen world={world} onWorldUpdate={setWorld} />,
-    intelligence: <IntelligenceScreen world={world} />,
+    intelligence: <IntelligenceScreen world={world} onWorldUpdate={setWorld} />,
     saves: <SavesPanel world={world} onLoaded={setWorld} />,
     history: <HistoryPanel world={world} />,
   } satisfies Record<DockTab, React.ReactNode>;

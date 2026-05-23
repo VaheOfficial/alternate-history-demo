@@ -14,6 +14,7 @@ pub mod pending;
 pub mod production_queue;
 pub mod province;
 pub mod scenario;
+pub mod spy;
 pub mod tech;
 pub mod treaty;
 pub mod unit;

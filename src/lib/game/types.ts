@@ -191,6 +191,7 @@ export interface World {
   victory?: Victory | null;
   wars: War[];
   production_orders: ProductionOrder[];
+  spy_missions: SpyMission[];
 }
 
 export type VictoryKind =
@@ -300,6 +301,27 @@ export type TechId =
 export interface ResearchState {
   target?: TechId | null;
   progress: Partial<Record<TechId, number>>;
+}
+
+export type SpyMissionKind =
+  | "steal_tech"
+  | "sabotage_industry"
+  | "gather_intel";
+
+export type SpyOutcome =
+  | { result: "success"; narrative: string }
+  | { result: "failure"; narrative: string };
+
+export interface SpyMission {
+  id: string;
+  target: string;
+  kind: SpyMissionKind;
+  started_on: string;
+  resolves_on: string;
+  success_pct: number;
+  tech_target?: TechId | null;
+  resolved: boolean;
+  outcome?: SpyOutcome | null;
 }
 
 export interface Crisis {

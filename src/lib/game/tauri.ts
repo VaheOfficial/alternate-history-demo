@@ -361,3 +361,24 @@ export function cancelBuild(world: World, orderId: string) {
 export function setResearchTarget(world: World, target: TechId | null) {
   return invoke<World>("set_research_target_cmd", { world, target });
 }
+
+// ─── Espionage (Plan 12 Phase 5) ────────────────────────────────────────
+
+import type { SpyMissionKind } from "./types";
+
+export interface StartSpyMissionRequest {
+  target: string;
+  kind: SpyMissionKind;
+  tech_target: TechId | null;
+}
+
+export function startSpyMission(
+  world: World,
+  request: StartSpyMissionRequest,
+) {
+  return invoke<World>("start_spy_mission_cmd", { world, request });
+}
+
+export function dismissSpyMission(world: World, missionId: string) {
+  return invoke<World>("dismiss_spy_mission_cmd", { world, missionId });
+}
