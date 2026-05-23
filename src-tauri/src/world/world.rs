@@ -8,6 +8,7 @@ use super::frontline::Frontline;
 use super::ids::{BranchId, NationId, SaveId};
 use super::nation::Nation;
 use super::npc::Npc;
+use super::pending::PendingAction;
 use super::province::Province;
 use super::treaty::Treaty;
 use super::unit::Unit;
@@ -26,6 +27,11 @@ pub struct World {
     pub crises: Vec<Crisis>,
     pub frontlines: Vec<Frontline>,
     pub events: Vec<Event>,
+    /// Multi-turn operations awaiting their completion date.
+    /// Player can queue arbitrarily ambitious intents (invasion, tech
+    /// projects, mega-construction) — engine ticks them each end-turn.
+    #[serde(default)]
+    pub pending: Vec<PendingAction>,
 }
 
 impl World {
@@ -46,6 +52,7 @@ impl World {
             crises: vec![],
             frontlines: vec![],
             events: vec![],
+            pending: vec![],
         }
     }
 }

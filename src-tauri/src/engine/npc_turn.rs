@@ -128,20 +128,97 @@ async fn orchestrate(
     let recent_events = build_recent_events(world);
     let tuning = crate::providers::gpu_profile::tune_for(provider, model, true).await;
 
+    // Identify the player nation so it is excluded from the picks. The player
+    // takes their own turn — the NPC orchestrator must NOT pick them or the
+    // LLM ends up writing about the player's own country in third person.
+    let player_iso = world
+        .player_nation
+        .and_then(|id| world.nations.iter().find(|n| n.id == id))
+        .map(|n| n.iso_a3.as_str());
+
+    // Surface antagonized nations: anyone the player just declared war on or
+    // sent a negative relation hit toward in the latest 5 events. The
+    // orchestrator should prioritize these so the targets get to react.
+    let antagonized: Vec<String> = world
+        .events
+        .iter()
+        .rev()
+        .take(5)
+        .flat_map(|e| {
+            let mut out: Vec<String> = Vec::new();
+            for action in &e.typed_actions {
+                match action {
+                    crate::world::action::TypedAction::DeclareWar { target, .. } => {
+                        if let Some(n) = world.nations.iter().find(|n| n.id == *target) {
+                            out.push(n.iso_a3.clone());
+                        }
+                    }
+                    crate::world::action::TypedAction::ModifyRelation { to, delta, .. }
+                        if *delta < -5 =>
+                    {
+                        if let Some(n) = world.nations.iter().find(|n| n.id == *to) {
+                            out.push(n.iso_a3.clone());
+                        }
+                    }
+                    crate::world::action::TypedAction::TransferTerritory { from, .. } => {
+                        if let Some(n) = world.nations.iter().find(|n| n.id == *from) {
+                            out.push(n.iso_a3.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out
+        })
+        .filter(|iso| Some(iso.as_str()) != player_iso)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let antagonized_block = if antagonized.is_empty() {
+        "(none flagged)".to_string()
+    } else {
+        antagonized
+            .iter()
+            .map(|i| format!("  - {}", i))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let player_clause = match player_iso {
+        Some(iso) => format!(
+            "EXCLUDE the PLAYER NATION '{}' from your picks. The player takes their own turn — \
+             your job is to decide which OTHER nations react.\n",
+            iso
+        ),
+        None => String::new(),
+    };
+
     let system = format!(
         "You decide which world nations would plausibly take a significant action \
          in the next {} days. Pick at most {} nations. Consider: ongoing wars, \
          recent treaties, internal instability, regional rivalries, looming \
-         deadlines. Do NOT include the inactive long tail of small peaceful \
-         states. Do NOT favor any particular country.\n\n\
+         deadlines. {}\
+         If any nation was just antagonized by the player (relation cut, \
+         ultimatum, troop movement on their border), ALWAYS include them — \
+         they need to react this turn.\n\n\
          Output JSON only:\n\
          {{\"nations\": [{{\"iso\": \"<ISO3>\", \"reason\": \"<one sentence>\"}}, ...]}}\n\
          Use ISO3 codes from the directory below verbatim.",
-        days, max_actors
+        days, max_actors, player_clause
     );
     let user = format!(
-        "WORLD DATE: {}\n\nNATIONS:\n{}\n\nRECENT EVENTS:\n{}\n\nPick the actors.",
-        world.clock.current_date, nations_summary, recent_events
+        "WORLD DATE: {}\n\n\
+         PLAYER NATION (DO NOT PICK): {}\n\n\
+         RECENTLY ANTAGONIZED — these nations were affected by the latest events, \
+         strongly prefer picking them so they can respond:\n{}\n\n\
+         NATIONS:\n{}\n\n\
+         RECENT EVENTS:\n{}\n\n\
+         Pick the actors.",
+        world.clock.current_date,
+        player_iso.unwrap_or("(unassigned)"),
+        antagonized_block,
+        nations_summary,
+        recent_events,
     );
 
     let req = ChatRequest {
@@ -172,14 +249,32 @@ async fn orchestrate(
         .ok_or_else(|| "orchestrator: could not parse JSON".to_string())?;
     let picks = env.nations.unwrap_or_default();
 
-    // Filter to valid ISOs only.
+    // Filter to valid ISOs only, and always exclude the player nation even if
+    // the LLM ignored the prompt directive. Also force-inject any antagonized
+    // nation that the LLM forgot to pick — that's how the target gets a turn.
     let valid: std::collections::HashSet<String> =
         world.nations.iter().map(|n| n.iso_a3.clone()).collect();
-    Ok(picks
+    let mut picks_final: Vec<OrchestratorPick> = picks
         .into_iter()
-        .filter(|p| valid.contains(&p.iso))
-        .take(max_actors)
-        .collect())
+        .filter(|p| valid.contains(&p.iso) && Some(p.iso.as_str()) != player_iso)
+        .collect();
+
+    // Inject missing antagonized targets at the front (max 2) so they get
+    // priority within the max_actors cap.
+    let mut injected = 0;
+    for iso in antagonized.iter().take(2) {
+        if !picks_final.iter().any(|p| &p.iso == iso) {
+            picks_final.insert(
+                injected,
+                OrchestratorPick {
+                    iso: iso.clone(),
+                    reason: "must react to recent hostile action".to_string(),
+                },
+            );
+            injected += 1;
+        }
+    }
+    Ok(picks_final.into_iter().take(max_actors).collect())
 }
 
 // ─── Per-nation actor ───────────────────────────────────────────────────────
@@ -188,10 +283,21 @@ async fn orchestrate(
 struct ActorEnvelope {
     #[serde(default)]
     narrative: Option<String>,
+    /// Raw values so one bad action doesn't drop the whole turn.
     #[serde(default)]
-    actions: Option<Vec<TypedAction>>,
+    actions: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     goal_update: Option<Vec<String>>,
+}
+
+/// Best-effort parse each entry as a TypedAction; bad entries are silently
+/// dropped so a single unknown variant doesn't lose the narrative + every
+/// other valid action in the same turn.
+fn coerce_actor_actions(values: Vec<serde_json::Value>) -> Vec<TypedAction> {
+    values
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<TypedAction>(v).ok())
+        .collect()
 }
 
 struct ActorOutput {
@@ -319,7 +425,7 @@ async fn run_nation_turn(
     Ok(ActorOutput {
         nation_name: nation.name.clone(),
         narrative: env.narrative.unwrap_or_default(),
-        applied: env.actions.unwrap_or_default(),
+        applied: coerce_actor_actions(env.actions.unwrap_or_default()),
         goal_update: env.goal_update,
         raw_response: raw,
     })
@@ -480,6 +586,16 @@ fn repair_json(s: &str) -> String {
             ']' => depth_arr -= 1,
             _ => {}
         }
+    }
+    // Truncated mid-string (model ran out of tokens inside the narrative
+    // value): close the string before we balance brackets. Without this
+    // the partial narrative leaks through as "(unparseable response)".
+    if in_str {
+        // If the last char is a dangling backslash, escape it first.
+        if s2.ends_with('\\') {
+            s2.push('\\');
+        }
+        s2.push('"');
     }
     while depth_arr > 0 {
         s2.push(']');

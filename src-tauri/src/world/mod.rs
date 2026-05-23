@@ -7,6 +7,7 @@ pub mod ids;
 pub mod migration;
 pub mod nation;
 pub mod npc;
+pub mod pending;
 pub mod province;
 pub mod scenario;
 pub mod treaty;

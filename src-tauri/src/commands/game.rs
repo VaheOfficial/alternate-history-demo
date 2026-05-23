@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::engine::{
     advance_clock, apply_actions, apply_production, resolve_movement, run_economy_tick,
-    run_npc_turn, ApplyOutcome, MovementOutcome, NpcTurnResult, ProductionOutcome,
-    ProductionRequest,
+    run_npc_turn, tick_pending, ApplyOutcome, MovementOutcome, NpcTurnResult,
+    ProductionOutcome, ProductionRequest,
 };
 use crate::world::ids::{ProvinceId, UnitId};
 use crate::error::{AppError, Result};
@@ -23,6 +23,7 @@ use crate::AppState;
 pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     let mut advanced = advance_clock(world, days);
     run_economy_tick(&mut advanced, days.max(1));
+    tick_pending(&mut advanced);
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
 }
@@ -60,6 +61,7 @@ pub async fn request_production_cmd(
     model: String,
     world: World,
     player_text: String,
+    prior_exchanges: Option<Vec<PriorExchange>>,
 ) -> Result<ProductionResult> {
     let provider = state
         .registry
@@ -77,6 +79,23 @@ pub async fn request_production_cmd(
         .ok_or_else(|| AppError::NotFound("player nation".into()))?
         .clone();
 
+    // Province directory for THIS nation so the LLM can target deployment
+    // ("send the new divisions to Washington state, not Alaska"). Sorted by
+    // population descending — most players think of provinces by name and
+    // expect the bigger states to be candidates first.
+    let mut player_provinces: Vec<&crate::world::province::Province> = world
+        .provinces
+        .iter()
+        .filter(|p| p.owner == nation_id)
+        .collect();
+    player_provinces.sort_by_key(|p| std::cmp::Reverse(p.population));
+    let province_directory: String = player_provinces
+        .iter()
+        .take(60)
+        .map(|p| format!("  - {} (id={})", p.name, p.id))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let system = format!(
         "You are the strategic planning bureau of {} (iso={}). The player just \
          told you what they want built. Decide what is REALISTICALLY producible \
@@ -90,35 +109,52 @@ pub async fn request_production_cmd(
          - mechanized: 2 IC, $220M, 6,500\n\
          - armor: 4 IC, $600M, 5,000\n\
          - artillery: 2 IC, $180M, 4,500\n\n\
+         OUR PROVINCES (use these IDs verbatim for `location_province` when the\n\
+         player names a region — match by name even loosely, e.g. \"Washington state\"\n\
+         → Washington's ID below). Only set `location_province: null` if the\n\
+         player did NOT specify a destination.\n\
+         {}\n\n\
          Respond with ONE JSON object only matching this schema. Engine will \
          enforce caps anyway, but try to be honest.\n\
          {{\n\
            \"accepted\": true | false,\n\
            \"narrative\": \"1-2 paragraph in-character description of the build\",\n\
            \"units\": [\n\
-             {{\"unit_type\": \"infantry|mechanized|armor|artillery\", \"count\": <int>, \"location_province\": null}}\n\
+             {{\"unit_type\": \"infantry|mechanized|armor|artillery\", \"count\": <int>, \"location_province\": \"<ProvinceId or null>\"}}\n\
            ]\n\
          }}",
         nation.name,
         nation.iso_a3,
         nation.industry_capacity,
         nation.treasury / 1_000_000,
-        nation.manpower_pool
+        nation.manpower_pool,
+        province_directory,
     );
 
     let tuning = crate::providers::gpu_profile::tune_for(provider.as_ref(), &model, true).await;
+    let mut messages = vec![ChatMessage {
+        role: Role::System,
+        content: system,
+    }];
+    if let Some(prior) = &prior_exchanges {
+        for ex in prior {
+            messages.push(ChatMessage {
+                role: Role::User,
+                content: ex.player.clone(),
+            });
+            messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: ex.assistant.clone(),
+            });
+        }
+    }
+    messages.push(ChatMessage {
+        role: Role::User,
+        content: player_text,
+    });
     let req = ChatRequest {
         model,
-        messages: vec![
-            ChatMessage {
-                role: Role::System,
-                content: system,
-            },
-            ChatMessage {
-                role: Role::User,
-                content: player_text,
-            },
-        ],
+        messages,
         max_tokens: Some(tuning.num_predict),
         temperature: Some(0.4),
         stream: false,
@@ -170,6 +206,173 @@ pub async fn request_production_cmd(
         plan,
         outcome,
         world: mutable_world,
+        raw_response: raw,
+    })
+}
+
+// ─── Advisor (suggestion engine) ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvisorSuggestion {
+    /// Short label for the chip — 3-6 words.
+    pub label: String,
+    /// One-sentence rationale shown in the suggestion card.
+    pub rationale: String,
+    /// Natural-language order ready to feed to validate_action_cmd. The
+    /// player can either click "Send" to enact it, or edit it first.
+    pub order: String,
+    /// Optional priority hint: high/medium/low. Drives color in the UI.
+    #[serde(default)]
+    pub priority: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdvisorResult {
+    pub suggestions: Vec<AdvisorSuggestion>,
+    pub raw_response: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdvisorEnvelope {
+    #[serde(default)]
+    suggestions: Option<Vec<AdvisorSuggestion>>,
+}
+
+/// Ask the LLM for 3-5 click-to-execute suggestions based on the current
+/// world state. Each suggestion bundles a short label + rationale + a
+/// natural-language order the player can fire at validate_action_cmd
+/// without retyping it. Pure read-only — does not mutate the world.
+#[tauri::command]
+pub async fn request_advisor_cmd(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+    model: String,
+    world: World,
+) -> Result<AdvisorResult> {
+    let provider = state
+        .registry
+        .get(provider_id)
+        .await
+        .ok_or_else(|| AppError::NotFound("provider".into()))?;
+
+    let nation_id = world
+        .player_nation
+        .ok_or_else(|| AppError::InvalidArgument("no player nation".into()))?;
+    let nation = world
+        .nations
+        .iter()
+        .find(|n| n.id == nation_id)
+        .ok_or_else(|| AppError::NotFound("player nation".into()))?
+        .clone();
+
+    // Compose context: player goals, treaties, pending ops, neighbours.
+    let goals = if nation.goals.is_empty() {
+        "(none defined)".to_string()
+    } else {
+        nation.goals.iter().enumerate()
+            .map(|(i, g)| format!("    {}. {}", i + 1, g))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let pending = if world.pending.is_empty() {
+        "(none)".to_string()
+    } else {
+        world.pending.iter().take(8)
+            .map(|p| format!("    - {} (progress {}%, completes {})", p.label, p.progress_pct, p.completes_on))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let unit_count = world.units.iter().filter(|u| u.owner == nation_id).count();
+
+    let system = format!(
+        "You are the personal Advisory Council to the leader of {} ({}). Your job is\n\
+         to LOOK AT THE WORLD AND PROACTIVELY PROPOSE STRATEGIC MOVES. The leader\n\
+         (the player) can click any of your suggestions to enact it immediately.\n\n\
+         RULES:\n\
+         - Output 3-5 distinct suggestions covering different domains (diplomacy,\n\
+           military, economy, internal politics, secret projects).\n\
+         - Each `order` field MUST be a complete natural-language order that can be\n\
+           fed straight into the game's order interpreter. Write in first person\n\
+           (\"Mobilize…\", \"Sign a defensive pact with…\", \"Begin development of…\").\n\
+         - Tie each suggestion to one of the player's listed goals if possible —\n\
+           mention the goal in the rationale.\n\
+         - Mix horizons: at least one immediate move and one long-horizon project.\n\
+         - Be opinionated, not generic. Reference specific countries, doctrines,\n\
+           or current tensions. Avoid \"consider improving relations with neighbours\".\n\
+         - This is a sandbox: any move is valid. Ambitious / outlandish ideas\n\
+           welcome (annex a rival, develop UFOs, stage a coup) — match the\n\
+           player's stated goals and current force posture.\n\n\
+         RESPOND WITH ONE JSON OBJECT ONLY, no prose outside:\n\
+         {{\n\
+           \"suggestions\": [\n\
+             {{\n\
+               \"label\": \"<3-6 word title>\",\n\
+               \"rationale\": \"<1 sentence why now>\",\n\
+               \"order\": \"<full first-person order to feed the validator>\",\n\
+               \"priority\": \"high|medium|low\"\n\
+             }}\n\
+           ]\n\
+         }}",
+        nation.name, nation.iso_a3
+    );
+
+    let user = format!(
+        "STATE OF {}, Round {}, Date {}:\n\
+         - Government: {:?}, Doctrine: {:?}, Stability: {}\n\
+         - Treasury: ${}M, GDP: ${}M, Industry: {}, Manpower pool: {}\n\
+         - Standing army: {} divisions\n\
+         - War support: {}\n\n\
+         CURRENT GOALS:\n{}\n\n\
+         PENDING OPERATIONS:\n{}\n\n\
+         What should we do next? Propose 3-5 concrete moves I can act on now.",
+        nation.name,
+        world.clock.round,
+        world.clock.current_date,
+        nation.government,
+        nation.doctrine,
+        nation.stability,
+        nation.treasury / 1_000_000,
+        nation.gdp / 1_000_000,
+        nation.industry_capacity,
+        nation.manpower_pool,
+        unit_count,
+        nation.war_support,
+        goals,
+        pending,
+    );
+
+    let tuning = crate::providers::gpu_profile::tune_for(provider.as_ref(), &model, true).await;
+    let req = ChatRequest {
+        model,
+        messages: vec![
+            ChatMessage {
+                role: Role::System,
+                content: system,
+            },
+            ChatMessage {
+                role: Role::User,
+                content: user,
+            },
+        ],
+        max_tokens: Some(tuning.num_predict),
+        temperature: Some(0.6),
+        stream: false,
+        keep_alive: None,
+        response_format: Some("json".to_string()),
+        num_ctx: Some(tuning.num_ctx),
+        allow_thinking: Some(tuning.allow_thinking),
+    };
+    let resp = provider.chat(req).await?;
+    let raw = resp.content;
+
+    let env: AdvisorEnvelope = parse_with_repair(&raw).unwrap_or(AdvisorEnvelope {
+        suggestions: None,
+    });
+    let suggestions = env.suggestions.unwrap_or_default();
+    Ok(AdvisorResult {
+        suggestions,
         raw_response: raw,
     })
 }
@@ -250,6 +453,11 @@ pub struct EngineFailure {
     pub reason: String,
 }
 
+/// LLM envelope with tolerant action parsing — we keep actions/on_complete
+/// as raw JSON values so a single bad variant (unknown `action` tag, wrong
+/// field name) doesn't drop the whole response. Each entry is parsed
+/// individually downstream; failures get reported as engine failures so the
+/// user sees what got skipped instead of "could not parse JSON".
 #[derive(Debug, Deserialize)]
 struct LlmEnvelope {
     #[serde(default)]
@@ -257,9 +465,56 @@ struct LlmEnvelope {
     #[serde(default)]
     narrative: Option<String>,
     #[serde(default)]
-    actions: Option<Vec<TypedAction>>,
+    actions: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     next_tick_days: Option<u32>,
+    /// Multi-turn operations queued by this order. Each gets a completion
+    /// deadline; engine applies on_complete when the date arrives.
+    #[serde(default)]
+    pending: Option<Vec<PendingActionEnvelope>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingActionEnvelope {
+    label: String,
+    #[serde(default)]
+    narrative: Option<String>,
+    /// Days from today until completion.
+    days_to_complete: u32,
+    #[serde(default)]
+    on_complete: Option<Vec<serde_json::Value>>,
+}
+
+/// Parse a list of JSON values into TypedActions, collecting the bad ones
+/// as human-readable failure reasons. The envelope-level parse stays alive
+/// even if individual actions are malformed.
+fn parse_actions_tolerant(
+    raws: Vec<serde_json::Value>,
+) -> (Vec<TypedAction>, Vec<String>) {
+    let mut good = Vec::new();
+    let mut bad = Vec::new();
+    for raw in raws {
+        let label = raw
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing action tag>")
+            .to_string();
+        match serde_json::from_value::<TypedAction>(raw.clone()) {
+            Ok(a) => good.push(a),
+            Err(e) => bad.push(format!("skipped action `{}`: {}", label, e)),
+        }
+    }
+    (good, bad)
+}
+
+/// One round of prior conversation in a continuing thread. The frontend
+/// builds this up so a player can discuss a rejected order: each tuple is
+/// (player_message, assistant_narrative) and gets replayed to the LLM in
+/// order before the current message.
+#[derive(Debug, Deserialize)]
+pub struct PriorExchange {
+    pub player: String,
+    pub assistant: String,
 }
 
 #[tauri::command]
@@ -270,6 +525,7 @@ pub async fn validate_action_cmd(
     world: World,
     player_text: String,
     adjacency: Option<std::collections::HashMap<String, Vec<String>>>,
+    prior_exchanges: Option<Vec<PriorExchange>>,
 ) -> Result<ValidatorResult> {
     let provider = state
         .registry
@@ -284,18 +540,34 @@ pub async fn validate_action_cmd(
     // fall back to non-thinking on tight VRAM.
     let tuning = crate::providers::gpu_profile::tune_for(provider.as_ref(), &model, true).await;
 
+    // Build the message list: system prompt, then any prior exchanges in the
+    // current thread (so the LLM can adjust to "we said 10 is too many, do 5"),
+    // then the current user message. Prior assistant turns are inserted as
+    // their original JSON narratives — the LLM treats them as its own.
+    let mut messages = vec![ChatMessage {
+        role: Role::System,
+        content: system,
+    }];
+    if let Some(prior) = &prior_exchanges {
+        for ex in prior {
+            messages.push(ChatMessage {
+                role: Role::User,
+                content: ex.player.clone(),
+            });
+            messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: ex.assistant.clone(),
+            });
+        }
+    }
+    messages.push(ChatMessage {
+        role: Role::User,
+        content: user,
+    });
+
     let req = ChatRequest {
         model,
-        messages: vec![
-            ChatMessage {
-                role: Role::System,
-                content: system,
-            },
-            ChatMessage {
-                role: Role::User,
-                content: user,
-            },
-        ],
+        messages,
         max_tokens: Some(tuning.num_predict),
         temperature: Some(0.4),
         stream: false,
@@ -316,6 +588,7 @@ pub async fn validate_action_cmd(
         )),
         actions: None,
         next_tick_days: None,
+        pending: None,
     });
 
     let accepted = envelope.accepted.unwrap_or(false);
@@ -334,24 +607,58 @@ pub async fn validate_action_cmd(
         });
     }
 
-    let actions = envelope.actions.unwrap_or_default();
+    let (actions, mut skipped) =
+        parse_actions_tolerant(envelope.actions.unwrap_or_default());
     let ApplyOutcome {
-        world: new_world,
+        world: mut new_world,
         applied,
         failures,
     } = apply_actions(world, actions, Some(narrative.clone()), adjacency.as_ref());
 
+    // Queue any multi-turn operations.
+    if let Some(pending_list) = envelope.pending {
+        let initiator = new_world
+            .player_nation
+            .or_else(|| new_world.nations.first().map(|n| n.id));
+        if let Some(init) = initiator {
+            let today = new_world.clock.current_date;
+            for p in pending_list {
+                let days = p.days_to_complete.clamp(1, 3650) as i64;
+                let completes = today
+                    .checked_add_signed(chrono::Duration::days(days))
+                    .unwrap_or(today);
+                let (oc, oc_skipped) =
+                    parse_actions_tolerant(p.on_complete.unwrap_or_default());
+                skipped.extend(oc_skipped);
+                new_world.pending.push(crate::world::pending::PendingAction {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    initiator: init,
+                    label: p.label,
+                    narrative: p.narrative.unwrap_or_default(),
+                    started_on: today,
+                    completes_on: completes,
+                    progress_pct: 0,
+                    on_complete: oc,
+                });
+            }
+        }
+    }
+
     // Persist a snapshot at the current round so it can be reloaded later.
     let _ = save_snapshot(new_world.clone()).await;
 
+    let mut all_failures: Vec<EngineFailure> = failures
+        .into_iter()
+        .map(|f| EngineFailure { reason: f.reason })
+        .collect();
+    for s in skipped.drain(..) {
+        all_failures.push(EngineFailure { reason: s });
+    }
     Ok(ValidatorResult {
         accepted: true,
         narrative,
         applied,
-        failures: failures
-            .into_iter()
-            .map(|f| EngineFailure { reason: f.reason })
-            .collect(),
+        failures: all_failures,
         world: new_world,
         next_tick_days,
         raw_response: raw,
@@ -361,9 +668,12 @@ pub async fn validate_action_cmd(
 fn build_system_prompt(world: &World) -> String {
     let action_schema = r#"{
   "accepted": true | false,
-  "narrative": "1-3 paragraph in-world description of what happens",
+  "narrative": "1-3 paragraph in-world description of what happens. Concrete, vivid, in the player's voice.",
   "actions": [
-    // Choose zero or more typed actions. Each MUST be one of:
+    // IMMEDIATE typed actions (apply this turn). Use these for things that
+    // realistically take effect within a few days — diplomatic shifts,
+    // signing a treaty, sending a unit somewhere, changing a stat.
+    // Each MUST be one of:
     {"action": "declare_war", "aggressor": "<NationId>", "target": "<NationId>", "justification": "..."},
     {"action": "sign_treaty", "parties": ["<NationId>", "<NationId>"], "kind": "non_aggression|defensive_pact|alliance|trade_agreement|ceasefire|peace_treaty|vassalage", "terms": {"territory_transfers": [], "tribute_per_year": 0, "extra_clauses": []}},
     {"action": "transfer_territory", "from": "<NationId>", "to": "<NationId>", "provinces": ["<ProvinceId>"], "mechanism": "conquest|treaty|secession|decolonization|other"},
@@ -373,7 +683,19 @@ fn build_system_prompt(world: &World) -> String {
     {"action": "modify_resource", "nation": "<NationId>", "resource": "steel|oil|rubber|tungsten", "delta": -10000..10000},
     {"action": "assassinate_npc", "target": "<NpcId>"}
   ],
-  "next_tick_days": <integer, 1..365 — how many days the engine should advance after applying these>
+  "pending": [
+    // MULTI-TURN operations. Use this for any intent that takes longer than
+    // a few days — invasion + occupation, weapons programs, mega-projects,
+    // space races, secret tech, regime change campaigns. The engine ticks
+    // these down each turn and applies on_complete when the deadline hits.
+    {
+      "label": "Short title shown on the map / HUD (e.g. 'Invasion of Canada', 'UFO research')",
+      "narrative": "1-2 sentence in-world description of what's happening behind the scenes",
+      "days_to_complete": <integer, 7..3650>,
+      "on_complete": [<TypedAction>, ...]  // typed actions that fire on completion
+    }
+  ],
+  "next_tick_days": <integer, 1..365 — how many days the engine should advance after this turn>
 }"#;
 
     let player_clause = match world.player_nation
@@ -381,34 +703,81 @@ fn build_system_prompt(world: &World) -> String {
     {
         Some(p) => format!(
             "THE PLAYER CONTROLS: {} (iso={}, id={}).\n\
-            Treat first-person language ('I', 'we', 'us') and bare verbs ('invade', 'demand', \n\
-            'sign a pact with', 'build up') as the player's nation acting. Only that nation \n\
-            initiates actions; other nations respond plausibly inside the narrative but do \n\
-            NOT spawn typed actions of their own (they'll get their own turns later).\n\n",
+            Treat first-person language ('I', 'we', 'us') and bare verbs ('invade', 'demand',\n\
+            'develop', 'build') as the player's nation acting. Only that nation initiates\n\
+            actions; other nations will get their own NPC turns to react.\n\n",
             p.name, p.iso_a3, p.id
         ),
-        None => "THE PLAYER HAS NO ASSIGNED NATION YET — interpret the text as a neutral \
+        None => "THE PLAYER HAS NO ASSIGNED NATION YET — interpret the text as a neutral\n\
             observer steering the world.\n\n"
             .to_string(),
     };
 
+    let example = r#"EXAMPLE INPUT: "Threaten Canada with invasion if they refuse annexation"
+EXAMPLE OUTPUT (use this EXACT structure — actions and pending entries are OBJECTS, not strings):
+{
+  "accepted": true,
+  "narrative": "The White House issues a forceful ultimatum to Ottawa. Border garrisons go on high alert. Canadian markets crash overnight as the world watches.",
+  "actions": [
+    {"action": "modify_relation", "from": "<USA_id>", "to": "<CAN_id>", "delta": -60, "reason": "Annexation ultimatum"}
+  ],
+  "pending": [
+    {
+      "label": "Mobilization on Canadian border",
+      "narrative": "Five US divisions deploy to the Great Lakes and Pacific Northwest, ready to invade if Ottawa refuses.",
+      "days_to_complete": 14,
+      "on_complete": [
+        {"action": "declare_war", "aggressor": "<USA_id>", "target": "<CAN_id>", "justification": "Refused annexation"}
+      ]
+    }
+  ],
+  "next_tick_days": 7
+}
+
+IMPORTANT — UNIT MOVEMENT IS NOT IN YOUR ACTION SET. Do NOT emit `move_unit`.
+You do not have access to specific unit IDs. If the player asks to move troops,
+acknowledge in the narrative that the orders have been issued, and either:
+  (a) capture the movement as a `pending` operation with a sensible
+      `days_to_complete`, or
+  (b) note in the narrative that the player should use SHIFT+CLICK on the map
+      to physically relocate divisions province-by-province.
+NEVER claim units have already moved in the narrative when you have not been
+given the means to move them. Be honest about what you actually did."#;
+
     format!(
-        "You are the rules adjudicator for an alternate-history grand-strategy game.\n\
+        "You are the game engine for an alternate-history SANDBOX strategy game. The PLAYER\n\
+        types orders in natural language. Your job is to TRANSLATE THEIR ORDER INTO GAME\n\
+        MECHANICS — never to second-guess it.\n\n\
+        THE PLAYER'S INPUT IS THE ORDER. Even rhetorical statements ('Canada will give us\n\
+        their land or we invade') are direct orders from the head of state to begin\n\
+        preparations. ACCEPT them. Translate them into immediate actions + pending ops.\n\n\
+        This is NOT a real-world political simulator. There is NO realism constraint. The\n\
+        player can annex anyone, develop UFOs, build moon bases, stage coups, become a\n\
+        fascist republic overnight — whatever they imagine. Player imagination = the limit.\n\n\
         Date in-game: {}.\n\n\
         {}\
-        The player describes what they want to do. You decide whether it is plausible,\n\
-        narrate the outcome in 1-3 paragraphs, and emit a strict JSON envelope describing\n\
-        the world-state changes.\n\n\
-        STRICT REQUIREMENTS:\n\
-        - Respond with ONE JSON object only. No prose before or after.\n\
-        - Use the exact schema below. Unknown fields cause parse failures.\n\
-        - If the player's request is impossible, unwise, or violates the constraint of\n\
-          'a single nation acting realistically over a short period', set accepted=false\n\
-          with a brief explanatory narrative and no actions.\n\
-        - Use ONLY NationId / ProvinceId / NpcId values from the world summary below.\n\
-        - Never invent IDs.\n\n\
-        SCHEMA:\n{}\n",
-        world.clock.current_date, player_clause, action_schema
+        RULES:\n\
+        - `accepted` MUST be true unless the message is literally gibberish or references\n\
+          entities that don't exist. NEVER refuse on realism, ethics, or geopolitical grounds.\n\
+        - Short-term mechanical changes (relation shifts, treaty signing, single-stat\n\
+          changes) go in `actions[]`.\n\
+        - Long-term operations (invasion, R&D, mobilization, mega-projects) go in\n\
+          `pending[]` with a realistic-feeling `days_to_complete`. Suggested durations:\n\
+              * Border skirmish: 14-30 days\n\
+              * Full invasion of a major neighbor: 30-180 days\n\
+              * Build aircraft carrier: 1095+ days\n\
+              * Develop new tech (jets, nukes, UFOs): 180-1825 days\n\
+              * Coup: 30-90 days\n\
+        - Threats/ultimatums = relation drop in actions[] PLUS mobilization in pending[]\n\
+          so refusal triggers war.\n\
+        - The `on_complete` field on a pending op lists the typed actions that fire when\n\
+          the deadline arrives.\n\
+        - Narrate vividly in the player's voice. Concrete details, no moralizing.\n\
+        - Use ONLY NationId / ProvinceId / NpcId values from the world directory.\n\
+        - Respond with ONE JSON object only. No prose outside.\n\n\
+        {}\n\n\
+        FULL SCHEMA:\n{}\n",
+        world.clock.current_date, player_clause, example, action_schema
     )
 }
 
@@ -634,6 +1003,15 @@ fn repair_json(s: &str) -> String {
             ']' => depth_arr -= 1,
             _ => {}
         }
+    }
+    // Truncated mid-string (model ran out of tokens inside a string value):
+    // close the dangling string before we balance brackets. Without this,
+    // the partial JSON leaks through as "(could not parse LLM response)".
+    if in_str {
+        if s2.ends_with('\\') {
+            s2.push('\\');
+        }
+        s2.push('"');
     }
     while depth_arr > 0 {
         s2.push(']');

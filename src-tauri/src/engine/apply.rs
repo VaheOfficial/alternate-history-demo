@@ -239,8 +239,11 @@ fn apply_one(
             Ok(())
         }
         TypedAction::MoveUnit { unit, target } => {
-            let adj = adjacency
-                .ok_or_else(|| "move: adjacency map not provided".to_string())?;
+            // Caller-provided adjacency takes priority (frontend sometimes
+            // sends a trimmed map); fall back to the embedded full graph so
+            // NPC turns and engine-internal callers don't need to plumb it.
+            let fallback = crate::engine::adjacency::default_adjacency();
+            let adj = adjacency.unwrap_or(fallback);
             let lookup = |s: &str| -> Vec<String> {
                 adj.get(s).cloned().unwrap_or_default()
             };

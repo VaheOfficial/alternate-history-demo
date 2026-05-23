@@ -110,14 +110,15 @@ pub fn compute_tuning(model_size_mb: u64, is_json: bool) -> ChatTuning {
     // Allow thinking if we have enough headroom for a real reasoning trace.
     let allow_thinking = num_ctx >= 8192;
 
-    // num_predict: generous if we're allowing thinking, conservative
-    // otherwise. For JSON output specifically we want extra slack so even
-    // long thinking traces still leave room for the answer.
+    // num_predict: thinking models can burn 3-5K tokens just reasoning
+    // before they reach the answer. For JSON we need extra headroom so the
+    // narrative + structured output don't get truncated mid-string. With
+    // 24GB GPUs the user gets 65K context — we can afford to be generous.
     let num_predict = match (allow_thinking, is_json) {
-        (true, true) => 4096,
-        (true, false) => 2048,
-        (false, true) => 1024,
-        (false, false) => 512,
+        (true, true) => 8192,
+        (true, false) => 4096,
+        (false, true) => 2048,
+        (false, false) => 1024,
     };
 
     ChatTuning {
