@@ -19,6 +19,7 @@ import type { ProviderConfig } from "../../lib/types";
 import { AdvisorPanel } from "./AdvisorPanel";
 import { BattlePlansPanel } from "./BattlePlansPanel";
 import { CountryDrawer } from "./CountryDrawer";
+import { DiplomacyPanel } from "./DiplomacyPanel";
 import { ProvinceTooltip } from "./ProvinceTooltip";
 import { OrderQueuePanel } from "./OrderQueuePanel";
 import { SavesPanel } from "./SavesPanel";
@@ -517,6 +518,17 @@ export function GameSession({
         world={world}
         providerId={providerId}
         model={model}
+        onWorldUpdate={setWorld}
+      />
+    ),
+    diplomacy: (
+      <DiplomacyPanel
+        world={world}
+        providers={providers}
+        providerId={providerId}
+        model={model}
+        onProviderChange={setProviderId}
+        onModelChange={setModel}
         onWorldUpdate={setWorld}
       />
     ),

@@ -151,6 +151,25 @@ export interface BattlePlan {
   executions: number;
 }
 
+export type ChannelStatus = "open" | "closed";
+
+export interface DiplomaticMessage {
+  id: string;
+  speaker: string;
+  content: string;
+  timestamp: string;
+  proposed_actions: unknown[];
+  enacted: boolean;
+}
+
+export interface DiplomaticChannel {
+  id: string;
+  participants: string[];
+  messages: DiplomaticMessage[];
+  status: ChannelStatus;
+  opened_on: string;
+}
+
 export interface World {
   save_id: string;
   branch_id: string;
@@ -166,6 +185,7 @@ export interface World {
   events: unknown[];
   pending: PendingAction[];
   battle_plans: BattlePlan[];
+  diplomatic_channels: DiplomaticChannel[];
 }
 
 export interface SaveSummary {

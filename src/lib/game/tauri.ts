@@ -242,3 +242,48 @@ export function executeBattlePlan(
     adjacency,
   });
 }
+
+// ─── Diplomacy chats (Plan 11) ─────────────────────────────────────────────
+
+import type { DiplomaticChannel } from "./types";
+
+export interface DiplomacySendResult {
+  world: World;
+  channel: DiplomaticChannel;
+}
+
+export function openDiplomaticChannel(world: World, participants: string[]) {
+  return invoke<World>("open_diplomatic_channel_cmd", { world, participants });
+}
+
+export function closeDiplomaticChannel(world: World, channelId: string) {
+  return invoke<World>("close_diplomatic_channel_cmd", { world, channelId });
+}
+
+export function enactDiplomaticProposal(
+  world: World,
+  channelId: string,
+  messageId: string,
+) {
+  return invoke<World>("enact_diplomatic_proposal_cmd", {
+    world,
+    channelId,
+    messageId,
+  });
+}
+
+export function sendDiplomaticMessage(
+  providerId: string,
+  model: string,
+  world: World,
+  channelId: string,
+  message: string,
+) {
+  return invoke<DiplomacySendResult>("send_diplomatic_message_cmd", {
+    providerId,
+    model,
+    world,
+    channelId,
+    message,
+  });
+}

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::battle_plan::BattlePlan;
 use super::clock::GameClock;
 use super::crisis::Crisis;
+use super::diplomacy::DiplomaticChannel;
 use super::event::Event;
 use super::frontline::Frontline;
 use super::ids::{BranchId, NationId, SaveId};
@@ -37,6 +38,10 @@ pub struct World {
     /// `world::battle_plan::BattlePlan` and Plan 10.
     #[serde(default)]
     pub battle_plans: Vec<BattlePlan>,
+    /// Multi-NPC diplomatic group chats opened by the player. See
+    /// `world::diplomacy::DiplomaticChannel` and Plan 11.
+    #[serde(default)]
+    pub diplomatic_channels: Vec<DiplomaticChannel>,
 }
 
 impl World {
@@ -59,6 +64,7 @@ impl World {
             events: vec![],
             pending: vec![],
             battle_plans: vec![],
+            diplomatic_channels: vec![],
         }
     }
 }

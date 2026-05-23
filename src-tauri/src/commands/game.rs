@@ -10,6 +10,7 @@ use crate::engine::{
     ProductionOutcome, ProductionRequest,
 };
 use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
+use crate::world::diplomacy::{ChannelStatus, DiplomaticChannel, DiplomaticMessage};
 use crate::world::ids::{NationId, ProvinceId, UnitId};
 use crate::error::{AppError, Result};
 use crate::providers::types::{ChatMessage, ChatRequest, Role};
@@ -1316,6 +1317,403 @@ fn find_json_block(s: &str) -> Option<&str> {
     // Truncated JSON (LLM ran out of tokens) — return from `start` to end so
     // the repair pass can balance the brackets.
     start.map(|st| &s[st..])
+}
+
+// ─── Diplomacy chats (Plan 11) ─────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct DiplomacySendResult {
+    pub world: World,
+    /// The channel after this send round, with the player's message + every
+    /// NPC reply appended. Convenience so the UI doesn't have to re-scan
+    /// world.diplomatic_channels.
+    pub channel: DiplomaticChannel,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiplomacyReplyEnvelope {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    proposed_actions: Option<Vec<serde_json::Value>>,
+}
+
+/// Open a new diplomatic channel between the player and one or more other
+/// nations. The player must include themselves in `participants` (or be set
+/// as world.player_nation, which the caller normally is).
+#[tauri::command]
+pub async fn open_diplomatic_channel_cmd(
+    world: World,
+    participants: Vec<NationId>,
+) -> Result<World> {
+    if participants.len() < 2 {
+        return Err(AppError::InvalidArgument(
+            "a channel needs at least two participants (you + one other)".into(),
+        ));
+    }
+    for nid in &participants {
+        if !world.nations.iter().any(|n| n.id == *nid) {
+            return Err(AppError::NotFound(format!("nation {} not in world", nid)));
+        }
+    }
+    let mut mutable = world;
+    mutable.diplomatic_channels.push(DiplomaticChannel {
+        id: Uuid::new_v4().to_string(),
+        participants,
+        messages: Vec::new(),
+        status: ChannelStatus::Open,
+        opened_on: mutable.clock.current_date,
+    });
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+#[tauri::command]
+pub async fn close_diplomatic_channel_cmd(
+    world: World,
+    channel_id: String,
+) -> Result<World> {
+    let mut mutable = world;
+    let ch = mutable
+        .diplomatic_channels
+        .iter_mut()
+        .find(|c| c.id == channel_id)
+        .ok_or_else(|| AppError::NotFound(format!("channel {} not found", channel_id)))?;
+    ch.status = ChannelStatus::Closed;
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+/// Apply a single message's `proposed_actions` to the world via the same
+/// engine pipeline the validator uses. Marks the message enacted.
+#[tauri::command]
+pub async fn enact_diplomatic_proposal_cmd(
+    world: World,
+    channel_id: String,
+    message_id: String,
+) -> Result<World> {
+    let mut mutable = world;
+    let proposals: Vec<TypedAction> = {
+        let ch = mutable
+            .diplomatic_channels
+            .iter_mut()
+            .find(|c| c.id == channel_id)
+            .ok_or_else(|| AppError::NotFound(format!("channel {} not found", channel_id)))?;
+        let msg = ch
+            .messages
+            .iter_mut()
+            .find(|m| m.id == message_id)
+            .ok_or_else(|| AppError::NotFound(format!("message {} not found", message_id)))?;
+        if msg.enacted {
+            return Err(AppError::InvalidArgument(
+                "proposal already enacted".into(),
+            ));
+        }
+        msg.enacted = true;
+        msg.proposed_actions.clone()
+    };
+    let ApplyOutcome {
+        world: new_world,
+        applied: _applied,
+        failures: _failures,
+    } = apply_actions(mutable, proposals, Some("Diplomatic proposal enacted.".into()), None);
+    let _ = save_snapshot(new_world.clone()).await;
+    Ok(new_world)
+}
+
+/// Player sends a message to a channel. Each NPC participant (in iso
+/// order) takes one turn replying. Returns the updated world + the
+/// channel snapshot the UI should render.
+#[tauri::command]
+pub async fn send_diplomatic_message_cmd(
+    state: State<'_, AppState>,
+    provider_id: Uuid,
+    model: String,
+    world: World,
+    channel_id: String,
+    message: String,
+) -> Result<DiplomacySendResult> {
+    let provider = state
+        .registry
+        .get(provider_id)
+        .await
+        .ok_or_else(|| AppError::NotFound("provider".into()))?;
+
+    let mut mutable = world;
+
+    // Resolve the channel and the player nation.
+    let player_nation_id = mutable
+        .player_nation
+        .ok_or_else(|| AppError::InvalidArgument("no player nation set".into()))?;
+
+    let channel_idx = mutable
+        .diplomatic_channels
+        .iter()
+        .position(|c| c.id == channel_id)
+        .ok_or_else(|| AppError::NotFound(format!("channel {} not found", channel_id)))?;
+    if !matches!(
+        mutable.diplomatic_channels[channel_idx].status,
+        ChannelStatus::Open
+    ) {
+        return Err(AppError::InvalidArgument("channel is closed".into()));
+    }
+    if !mutable.diplomatic_channels[channel_idx]
+        .participants
+        .contains(&player_nation_id)
+    {
+        return Err(AppError::InvalidArgument(
+            "player nation is not a participant in this channel".into(),
+        ));
+    }
+
+    let today = mutable.clock.current_date;
+
+    // 1. Append the player's message.
+    mutable.diplomatic_channels[channel_idx]
+        .messages
+        .push(DiplomaticMessage {
+            id: Uuid::new_v4().to_string(),
+            speaker: player_nation_id,
+            content: message.clone(),
+            timestamp: today,
+            proposed_actions: Vec::new(),
+            enacted: false,
+        });
+
+    // 2. For each NPC participant (iso-sorted), generate one reply.
+    let npc_participants: Vec<NationId> = {
+        let participants = mutable.diplomatic_channels[channel_idx]
+            .participants
+            .clone();
+        let mut npcs: Vec<(String, NationId)> = participants
+            .iter()
+            .filter(|nid| **nid != player_nation_id)
+            .filter_map(|nid| {
+                mutable
+                    .nations
+                    .iter()
+                    .find(|n| n.id == *nid)
+                    .map(|n| (n.iso_a3.clone(), n.id))
+            })
+            .collect();
+        npcs.sort_by(|a, b| a.0.cmp(&b.0));
+        npcs.into_iter().map(|(_, id)| id).collect()
+    };
+
+    let tuning =
+        crate::providers::gpu_profile::tune_for(provider.as_ref(), &model, true).await;
+
+    for npc_id in npc_participants {
+        let (system, transcript) = build_diplomacy_prompt(&mutable, channel_idx, npc_id);
+
+        let mut messages = vec![ChatMessage {
+            role: Role::System,
+            content: system,
+        }];
+        messages.push(ChatMessage {
+            role: Role::User,
+            content: transcript,
+        });
+
+        let req = ChatRequest {
+            model: model.clone(),
+            messages,
+            max_tokens: Some(tuning.num_predict),
+            temperature: Some(0.6),
+            stream: false,
+            keep_alive: None,
+            response_format: Some("json".to_string()),
+            num_ctx: Some(tuning.num_ctx),
+            allow_thinking: Some(tuning.allow_thinking),
+        };
+        let resp = match provider.chat(req).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Provider failure: record an error stub so the player sees what happened.
+                mutable.diplomatic_channels[channel_idx]
+                    .messages
+                    .push(DiplomaticMessage {
+                        id: Uuid::new_v4().to_string(),
+                        speaker: npc_id,
+                        content: format!("(no reply — LLM error: {})", e),
+                        timestamp: today,
+                        proposed_actions: Vec::new(),
+                        enacted: false,
+                    });
+                continue;
+            }
+        };
+        let raw = resp.content;
+        let env: DiplomacyReplyEnvelope = parse_with_repair(&raw).unwrap_or(DiplomacyReplyEnvelope {
+            content: Some(format!(
+                "(unparseable reply): {}",
+                raw.chars().take(400).collect::<String>()
+            )),
+            proposed_actions: None,
+        });
+        let (proposed, _skipped) =
+            parse_actions_tolerant(env.proposed_actions.unwrap_or_default());
+        mutable.diplomatic_channels[channel_idx]
+            .messages
+            .push(DiplomaticMessage {
+                id: Uuid::new_v4().to_string(),
+                speaker: npc_id,
+                content: env.content.unwrap_or_default(),
+                timestamp: today,
+                proposed_actions: proposed,
+                enacted: false,
+            });
+    }
+
+    let channel_snapshot = mutable.diplomatic_channels[channel_idx].clone();
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(DiplomacySendResult {
+        world: mutable,
+        channel: channel_snapshot,
+    })
+}
+
+/// Build the (system_prompt, user_prompt) tuple for an NPC participant
+/// taking their turn in a channel.
+fn build_diplomacy_prompt(
+    world: &World,
+    channel_idx: usize,
+    npc_id: NationId,
+) -> (String, String) {
+    let nation = world
+        .nations
+        .iter()
+        .find(|n| n.id == npc_id)
+        .cloned();
+    let nation_name = nation
+        .as_ref()
+        .map(|n| n.name.clone())
+        .unwrap_or_else(|| "Unknown Nation".into());
+    let iso = nation
+        .as_ref()
+        .map(|n| n.iso_a3.clone())
+        .unwrap_or_else(|| "???".into());
+    let government = nation
+        .as_ref()
+        .map(|n| format!("{:?}", n.government))
+        .unwrap_or_else(|| "?".into());
+    let doctrine = nation
+        .as_ref()
+        .map(|n| format!("{:?}", n.doctrine))
+        .unwrap_or_else(|| "?".into());
+    let stability = nation.as_ref().map(|n| n.stability).unwrap_or(0);
+    let goals = nation
+        .as_ref()
+        .map(|n| {
+            if n.goals.is_empty() {
+                "(no specific stated goals)".to_string()
+            } else {
+                n.goals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| format!("  {}. {}", i + 1, g))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        })
+        .unwrap_or_else(|| "?".into());
+
+    let channel = &world.diplomatic_channels[channel_idx];
+    let participant_lines: Vec<String> = channel
+        .participants
+        .iter()
+        .filter_map(|nid| world.nations.iter().find(|n| n.id == *nid))
+        .map(|n| {
+            let role = if Some(n.id) == world.player_nation {
+                " (the PLAYER)"
+            } else if n.id == npc_id {
+                " (YOU)"
+            } else {
+                ""
+            };
+            format!("  - {} ({}){}", n.name, n.iso_a3, role)
+        })
+        .collect();
+
+    let relations_line = match nation.as_ref() {
+        Some(n) => channel
+            .participants
+            .iter()
+            .filter(|nid| **nid != n.id)
+            .filter_map(|nid| world.nations.iter().find(|nn| nn.id == *nid))
+            .map(|other| {
+                let rel = n.relations.get(&other.id).copied().unwrap_or(0);
+                format!("  {}: {:+}", other.name, rel)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => String::new(),
+    };
+
+    let action_shapes = r#"VALID action shapes for `proposed_actions[]` (optional, advisory only — the player decides whether to enact):
+  {"action": "sign_treaty", "parties": ["<NationId>", ...], "kind": "non_aggression|defensive_pact|alliance|trade_agreement|ceasefire|peace_treaty|vassalage", "terms": {"territory_transfers": [], "tribute_per_year": 0, "extra_clauses": []}}
+  {"action": "modify_relation", "from": "<NationId>", "to": "<NationId>", "delta": -100..100, "reason": "..."}
+  {"action": "declare_war", "aggressor": "<NationId>", "target": "<NationId>", "justification": "..."}
+  {"action": "transfer_territory", "from": "<NationId>", "to": "<NationId>", "provinces": ["<ProvinceId>"], "mechanism": "treaty|secession|decolonization|other"}"#;
+
+    let system = format!(
+        "You ARE the leader / foreign minister of {} (iso={}). You are sitting at a \n\
+         multilateral diplomatic table.\n\n\
+         AT THIS TABLE:\n{}\n\n\
+         YOUR CONTEXT:\n\
+         - Government: {}\n\
+         - Doctrine: {}\n\
+         - Stability: {}\n\
+         - Your stated goals:\n{}\n\
+         - Your current relations with the other participants:\n{}\n\n\
+         CONVENTIONS:\n\
+         - Stay in character. Push YOUR nation's interests; do not flatter the player.\n\
+         - Be specific. Reference recent events, geography, doctrine, or domestic constraints.\n\
+         - 1-4 sentences of in-character text. NO meta-commentary, no \"as an AI…\".\n\
+         - You MAY propose typed_actions if you want a binding outcome (treaty, relation\n\
+           shift, declaration). They are ADVISORY — the player chooses whether to enact.\n\
+         - It's fine to refuse a deal, walk away, or escalate.\n\
+         - Use ONLY NationId values from the participant list above for action fields.\n\n\
+         {}\n\n\
+         Respond with ONE JSON object, no prose outside:\n\
+         {{\n\
+           \"content\": \"<your in-character message>\",\n\
+           \"proposed_actions\": [<optional typed action>, ...]\n\
+         }}",
+        nation_name,
+        iso,
+        participant_lines.join("\n"),
+        government,
+        doctrine,
+        stability,
+        goals,
+        if relations_line.is_empty() {
+            "  (no recorded relations with these participants)".to_string()
+        } else {
+            relations_line
+        },
+        action_shapes,
+    );
+
+    // Transcript so far.
+    let mut transcript = String::new();
+    transcript.push_str("CONVERSATION SO FAR:\n");
+    if channel.messages.is_empty() {
+        transcript.push_str("(no messages yet — you are speaking first)\n");
+    } else {
+        for m in &channel.messages {
+            let speaker_name = world
+                .nations
+                .iter()
+                .find(|n| n.id == m.speaker)
+                .map(|n| format!("{} ({})", n.name, n.iso_a3))
+                .unwrap_or_else(|| "?".into());
+            transcript.push_str(&format!("> {}: {}\n", speaker_name, m.content));
+        }
+    }
+    transcript.push_str("\nNow respond as your nation.");
+
+    (system, transcript)
 }
 
 #[cfg(test)]

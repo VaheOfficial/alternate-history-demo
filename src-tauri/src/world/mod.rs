@@ -2,6 +2,7 @@ pub mod action;
 pub mod battle_plan;
 pub mod clock;
 pub mod crisis;
+pub mod diplomacy;
 pub mod event;
 pub mod frontline;
 pub mod ids;
