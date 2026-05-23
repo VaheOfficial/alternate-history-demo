@@ -137,6 +137,10 @@ pub struct Nation {
     /// outcomes happen.
     #[serde(default)]
     pub factions: Vec<crate::world::faction::Faction>,
+
+    /// Tech research target + progress (Plan 12 Phase 4).
+    #[serde(default)]
+    pub research: crate::world::tech::ResearchState,
 }
 
 fn default_map_color() -> u8 {
@@ -172,6 +176,7 @@ mod tests {
             build_queue: Vec::new(),
             goals: vec!["test goal".into()],
             factions: vec![],
+            research: Default::default(),
         };
         let json = serde_json::to_string(&n).unwrap();
         let back: Nation = serde_json::from_str(&json).unwrap();

@@ -31,6 +31,24 @@ export function computeBadges(world: World): Partial<Record<DockTab, BadgeSpec>>
     out.production = { level: "amber" };
   }
 
+  // Production (Phase 4): amber when no orders are queued and there's
+  // industry to spend. Info badge with count when orders are active.
+  const myOrders = (world.production_orders ?? []).filter(
+    (o) => o.owner === world.player_nation,
+  );
+  if (myOrders.length > 0) {
+    out.production = { level: "info", count: myOrders.length };
+  }
+
+  // Research (Phase 4): amber when no project is set (encourages
+  // picking one); cleared once a target is active.
+  const playerFull = world.nations.find((n) => n.id === world.player_nation);
+  if (playerFull && !playerFull.research?.target) {
+    out.research = { level: "amber" };
+  } else {
+    delete (out as Partial<Record<DockTab, BadgeSpec>>).research;
+  }
+
   // Politics (Phase 3): elevate to red when any faction satisfaction <
   // 20, amber when any < 50. Counts each unhappy faction.
   const player = world.nations.find((n) => n.id === world.player_nation);

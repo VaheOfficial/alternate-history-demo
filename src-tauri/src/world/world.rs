@@ -52,6 +52,9 @@ pub struct World {
     /// Active and concluded wars. Plan 12 Phase 1.
     #[serde(default)]
     pub wars: Vec<War>,
+    /// Per-player production orders. Plan 12 Phase 4.
+    #[serde(default)]
+    pub production_orders: Vec<super::production_queue::ProductionOrder>,
 }
 
 impl World {
@@ -77,6 +80,7 @@ impl World {
             diplomatic_channels: vec![],
             victory: None,
             wars: vec![],
+            production_orders: vec![],
         }
     }
 }

@@ -7,11 +7,14 @@ use uuid::Uuid;
 use crate::engine::{
     accept_peace_proposal, advance_clock, apply_actions, apply_production, check_victory,
     compute_progress, mark_concluded, reject_peace_proposal, resolve_crisis,
-    resolve_movement, run_economy_tick, run_npc_turn, tick_crises, tick_pending, tick_wars,
-    ApplyOutcome, MovementOutcome, NpcTurnResult, ProductionOutcome, ProductionRequest,
-    VictoryProgress,
+    resolve_movement, run_economy_tick, run_npc_turn, tick_crises, tick_pending,
+    tick_production_queue, tick_research, tick_wars, unit_cost, ApplyOutcome,
+    MovementOutcome, NpcTurnResult, ProductionOutcome, ProductionRequest, VictoryProgress,
 };
 use crate::world::ids::CrisisId;
+use crate::world::nation::UnitType;
+use crate::world::production_queue::ProductionOrder;
+use crate::world::tech::TechId;
 use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
 use crate::world::diplomacy::{ChannelStatus, DiplomaticChannel, DiplomaticMessage};
 use crate::world::ids::{NationId, ProvinceId, UnitId};
@@ -34,11 +37,73 @@ pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     let mut advanced = advance_clock(world, days);
     run_economy_tick(&mut advanced, days.max(1));
     tick_pending(&mut advanced);
+    tick_production_queue(&mut advanced);
+    tick_research(&mut advanced);
     tick_wars(&mut advanced);
     tick_crises(&mut advanced);
     check_victory(&mut advanced);
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
+}
+
+// ─── Plan 12 Phase 4 — production queue + research commands ───────────────
+
+#[derive(Debug, Deserialize)]
+pub struct QueueBuildRequest {
+    pub unit_type: UnitType,
+    pub count: u32,
+    pub location: Option<ProvinceId>,
+}
+
+#[tauri::command]
+pub async fn queue_build_cmd(
+    world: World,
+    request: QueueBuildRequest,
+) -> Result<World> {
+    let mut mutable = world;
+    let Some(owner) = mutable.player_nation else {
+        return Err(AppError::InvalidArgument("no player nation set".into()));
+    };
+    let (ic, treasury, manpower) = unit_cost(request.unit_type);
+    mutable.production_orders.push(ProductionOrder {
+        id: Uuid::new_v4().to_string(),
+        owner,
+        unit_type: request.unit_type,
+        count: request.count.max(1),
+        built: 0,
+        location: request.location,
+        industry_cost_per: ic,
+        industry_paid: 0,
+        treasury_cost_per: treasury,
+        manpower_cost_per: manpower,
+        created_on: mutable.clock.current_date,
+    });
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+#[tauri::command]
+pub async fn cancel_build_cmd(world: World, order_id: String) -> Result<World> {
+    let mut mutable = world;
+    mutable.production_orders.retain(|o| o.id != order_id);
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
+}
+
+#[tauri::command]
+pub async fn set_research_target_cmd(
+    world: World,
+    target: Option<TechId>,
+) -> Result<World> {
+    let mut mutable = world;
+    let Some(player) = mutable.player_nation else {
+        return Err(AppError::InvalidArgument("no player nation set".into()));
+    };
+    if let Some(n) = mutable.nations.iter_mut().find(|n| n.id == player) {
+        n.research.target = target;
+    }
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
 }
 
 #[tauri::command]

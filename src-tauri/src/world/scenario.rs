@@ -345,6 +345,7 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
             build_queue: Vec::new(),
             goals: goals_for(iso),
             factions: seed_factions(government_for(iso)),
+            research: Default::default(),
         });
 
         nation_by_iso.insert(iso.clone(), nation_id);
@@ -452,6 +453,7 @@ pub fn build_modern_world(save: SaveId, branch: BranchId, start: NaiveDate) -> W
         diplomatic_channels: vec![],
         victory: None,
         wars: vec![],
+        production_orders: vec![],
     }
 }
 

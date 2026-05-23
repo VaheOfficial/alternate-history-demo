@@ -585,8 +585,8 @@ export function GameSession({
       />
     ),
     politics: <PoliticsScreen world={world} />,
-    research: <ResearchScreen world={world} />,
-    production: <ProductionScreen world={world} />,
+    research: <ResearchScreen world={world} onWorldUpdate={setWorld} />,
+    production: <ProductionScreen world={world} onWorldUpdate={setWorld} />,
     war: <WarScreen world={world} onWorldUpdate={setWorld} />,
     crises: <CrisesScreen world={world} onWorldUpdate={setWorld} />,
     intelligence: <IntelligenceScreen world={world} />,

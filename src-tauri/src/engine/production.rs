@@ -42,12 +42,165 @@ pub struct DeniedProduction {
 }
 
 /// Cost of one unit, by type, expressed as (industry_pts, treasury_usd, manpower).
-fn unit_cost(t: UnitType) -> (u32, i64, i64) {
+pub fn unit_cost(t: UnitType) -> (u32, i64, i64) {
     match t {
         UnitType::Infantry => (1, 80_000_000, 8_000),
         UnitType::Mechanized => (2, 220_000_000, 6_500),
         UnitType::Armor => (4, 600_000_000, 5_000),
         UnitType::Artillery => (2, 180_000_000, 4_500),
+    }
+}
+
+// ─── Multi-turn production queue (Plan 12 Phase 4) ─────────────────────────
+
+/// Tick the multi-turn production queue. For each owner, allocate their
+/// per-turn industry capacity across their orders; when a unit's
+/// industry cost is fully paid, spend treasury + manpower and spawn
+/// the unit at the requested location (or the nation's largest-pop
+/// province by default).
+///
+/// Removes orders whose `built` reaches `count`.
+pub fn tick_production_queue(world: &mut World) {
+    use crate::world::ids::{NationId, ProvinceId, UnitId};
+    use crate::world::unit::{SupplyState, Unit};
+
+    if world.production_orders.is_empty() {
+        return;
+    }
+
+    // Group orders by owner.
+    let mut by_owner: std::collections::HashMap<NationId, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, o) in world.production_orders.iter().enumerate() {
+        by_owner.entry(o.owner).or_default().push(i);
+    }
+
+    // For each owner, drain their per-turn industry capacity into orders
+    // round-robin, charging treasury + manpower per unit completed.
+    let owners: Vec<NationId> = by_owner.keys().copied().collect();
+    let mut spawn_queue: Vec<(NationId, UnitType, ProvinceId, u32)> = Vec::new();
+
+    for owner_id in owners {
+        let order_idxs = by_owner.get(&owner_id).cloned().unwrap_or_default();
+        if order_idxs.is_empty() {
+            continue;
+        }
+        let (mut ic_left, mut treasury_left, mut manpower_left) = {
+            let Some(n) = world.nations.iter().find(|n| n.id == owner_id) else {
+                continue;
+            };
+            (n.industry_capacity, n.treasury, n.manpower_pool)
+        };
+        // Pre-pick default location for this owner (largest-pop province).
+        let default_loc = world
+            .provinces
+            .iter()
+            .filter(|p| p.owner == owner_id)
+            .max_by_key(|p| p.population)
+            .map(|p| p.id);
+
+        // Round-robin allocate 1 IC at a time until budget exhausted or
+        // all orders complete.
+        let mut active: Vec<usize> = order_idxs;
+        while ic_left > 0 && !active.is_empty() {
+            let mut new_active: Vec<usize> = Vec::new();
+            for &idx in &active {
+                if ic_left == 0 {
+                    new_active.push(idx);
+                    continue;
+                }
+                let o = &mut world.production_orders[idx];
+                if o.remaining() == 0 {
+                    continue;
+                }
+                let cost_per = o.industry_cost_per.max(1);
+                let needed = cost_per.saturating_sub(o.industry_paid);
+                let take = needed.min(ic_left);
+                o.industry_paid += take;
+                ic_left -= take;
+
+                if o.industry_paid >= cost_per {
+                    // Check treasury + manpower.
+                    if treasury_left < o.treasury_cost_per
+                        || manpower_left < o.manpower_cost_per
+                    {
+                        // Can't afford the actual unit yet — pause this
+                        // order, hold the industry already paid.
+                        new_active.push(idx);
+                        continue;
+                    }
+                    treasury_left -= o.treasury_cost_per;
+                    manpower_left -= o.manpower_cost_per;
+                    o.industry_paid = 0;
+                    o.built += 1;
+                    let loc = o.location.or(default_loc);
+                    if let Some(loc) = loc {
+                        spawn_queue.push((owner_id, o.unit_type, loc, 0));
+                        let _ = take; // satisfy compiler
+                    }
+                }
+                if o.remaining() > 0 {
+                    new_active.push(idx);
+                }
+            }
+            active = new_active;
+        }
+
+        // Persist the budget consumption back to the nation.
+        if let Some(n) = world.nations.iter_mut().find(|n| n.id == owner_id) {
+            n.treasury = treasury_left;
+            n.manpower_pool = manpower_left;
+        }
+    }
+
+    // Materialize spawns.
+    for (owner, unit_type, location, _) in spawn_queue {
+        let nation_tech = world
+            .nations
+            .iter()
+            .find(|n| n.id == owner)
+            .map(|n| n.tech.0)
+            .unwrap_or(5);
+        let strength = (75 + nation_tech as u32 * 5).clamp(60, 120);
+        world.units.push(Unit {
+            id: UnitId::new(),
+            owner,
+            unit_type,
+            location,
+            strength,
+            organization: 80,
+            experience: 0,
+            supply_state: SupplyState::Supplied,
+        });
+    }
+
+    // Drop completed orders.
+    world.production_orders.retain(|o| !o.is_complete());
+}
+
+// ─── Tech research tick (Plan 12 Phase 4) ──────────────────────────────────
+
+/// Tick research for every nation whose `research.target` is set.
+/// Progress per tick = industry_capacity / 10. Caps at the tech's cost
+/// (research doesn't "spill over" to other techs).
+pub fn tick_research(world: &mut World) {
+    for n in &mut world.nations {
+        let Some(target) = n.research.target else {
+            continue;
+        };
+        let cap = target.cost();
+        let current = n.research.progress.get(&target).copied().unwrap_or(0);
+        if current >= cap {
+            // Already done; clear the target so the next pick fires.
+            n.research.target = None;
+            continue;
+        }
+        let gain = (n.industry_capacity / 10).max(1);
+        let next = (current.saturating_add(gain)).min(cap);
+        n.research.progress.insert(target, next);
+        if next >= cap {
+            n.research.target = None;
+        }
     }
 }
 

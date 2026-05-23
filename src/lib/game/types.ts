@@ -76,6 +76,7 @@ export interface Nation {
   build_queue: unknown[];
   goals: string[];
   factions?: Faction[];
+  research?: ResearchState;
 }
 
 export interface ResourceYield {
@@ -189,6 +190,7 @@ export interface World {
   diplomatic_channels: DiplomaticChannel[];
   victory?: Victory | null;
   wars: War[];
+  production_orders: ProductionOrder[];
 }
 
 export type VictoryKind =
@@ -269,6 +271,35 @@ export interface Faction {
   archetype: FactionArchetype;
   power: number;
   satisfaction: number;
+}
+
+export type UnitTypeKey = "infantry" | "mechanized" | "armor" | "artillery";
+
+export interface ProductionOrder {
+  id: string;
+  owner: string;
+  unit_type: UnitTypeKey;
+  count: number;
+  built: number;
+  location: string | null;
+  industry_cost_per: number;
+  industry_paid: number;
+  treasury_cost_per: number;
+  manpower_cost_per: number;
+  created_on: string;
+}
+
+export type TechId =
+  | "improved_infantry"
+  | "mechanized_doctrine"
+  | "armored_warfare"
+  | "encryption"
+  | "advanced_logistics"
+  | "communications";
+
+export interface ResearchState {
+  target?: TechId | null;
+  progress: Partial<Record<TechId, number>>;
 }
 
 export interface Crisis {

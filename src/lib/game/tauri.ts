@@ -339,3 +339,25 @@ export function resolveCrisis(
     optionIdx,
   });
 }
+
+// ─── Production + research (Plan 12 Phase 4) ───────────────────────────────
+
+import type { TechId, UnitTypeKey } from "./types";
+
+export interface QueueBuildRequest {
+  unit_type: UnitTypeKey;
+  count: number;
+  location: string | null;
+}
+
+export function queueBuild(world: World, request: QueueBuildRequest) {
+  return invoke<World>("queue_build_cmd", { world, request });
+}
+
+export function cancelBuild(world: World, orderId: string) {
+  return invoke<World>("cancel_build_cmd", { world, orderId });
+}
+
+export function setResearchTarget(world: World, target: TechId | null) {
+  return invoke<World>("set_research_target_cmd", { world, target });
+}

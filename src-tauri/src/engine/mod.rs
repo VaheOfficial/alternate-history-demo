@@ -23,7 +23,10 @@ pub use combat::{resolve_movement, MovementOutcome};
 pub use economy::run_economy_tick;
 pub use npc_turn::{run_npc_turn, NationTurn, NpcTurnResult, OrchestratorPick};
 pub use pending::tick_pending;
-pub use production::{apply_production, ProductionOutcome, ProductionRequest};
+pub use production::{
+    apply_production, tick_production_queue, tick_research, unit_cost, ProductionOutcome,
+    ProductionRequest,
+};
 pub use tick::advance_clock;
 pub use victory::{check_victory, compute_progress, mark_concluded, VictoryProgress};
 pub use war::{accept_peace_proposal, reject_peace_proposal, tick_wars};
