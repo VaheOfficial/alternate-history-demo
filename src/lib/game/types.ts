@@ -180,7 +180,7 @@ export interface World {
   units: Unit[];
   npcs: unknown[];
   treaties: Treaty[];
-  crises: unknown[];
+  crises: Crisis[];
   frontlines: unknown[];
   events: unknown[];
   pending: PendingAction[];
@@ -242,6 +242,33 @@ export interface War {
   conquered_provinces: string[];
   status: WarStatus;
   peace_proposals: PeaceProposal[];
+}
+
+export type CrisisCategory =
+  | "diplomatic"
+  | "military"
+  | "economic"
+  | "political"
+  | "humanitarian";
+
+export interface CrisisOption {
+  label: string;
+  narrative: string;
+  actions: unknown[];
+}
+
+export interface Crisis {
+  id: string;
+  headline: string;
+  category: CrisisCategory;
+  parties: string[];
+  stakes: string;
+  escalation: { 0: number };
+  options: CrisisOption[];
+  deadline_round?: number | null;
+  created_on?: string | null;
+  resolved: boolean;
+  resolved_option?: number | null;
 }
 
 export interface SaveSummary {

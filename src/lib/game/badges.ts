@@ -59,6 +59,12 @@ export function computeBadges(world: World): Partial<Record<DockTab, BadgeSpec>>
     out.plans = { level: "amber", count: planned };
   }
 
+  // Crises: red dot with the count of unresolved decision cards.
+  const unresolved = (world.crises ?? []).filter((c) => !c.resolved).length;
+  if (unresolved > 0) {
+    out.crises = { level: "red", count: unresolved };
+  }
+
   // War: red dot when an active war has an unresolved peace proposal
   // (a decision is genuinely waiting on the player). Otherwise amber
   // when any active war exists at all (just to highlight ongoing

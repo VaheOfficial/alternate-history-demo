@@ -7,6 +7,7 @@
 pub mod adjacency;
 pub mod apply;
 pub mod combat;
+pub mod crises;
 pub mod economy;
 #[cfg(test)]
 pub mod mock_provider;
@@ -26,3 +27,4 @@ pub use production::{apply_production, ProductionOutcome, ProductionRequest};
 pub use tick::advance_clock;
 pub use victory::{check_victory, compute_progress, mark_concluded, VictoryProgress};
 pub use war::{accept_peace_proposal, reject_peace_proposal, tick_wars};
+pub use crises::{resolve_crisis, tick_crises};

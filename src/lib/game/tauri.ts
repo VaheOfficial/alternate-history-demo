@@ -325,3 +325,17 @@ export function rejectPeaceProposal(
     proposalId,
   });
 }
+
+// ─── Crises (Plan 12 Phase 2) ──────────────────────────────────────────────
+
+export function resolveCrisis(
+  world: World,
+  crisisId: string,
+  optionIdx: number,
+) {
+  return invoke<World>("resolve_crisis_cmd", {
+    world,
+    crisisId,
+    optionIdx,
+  });
+}

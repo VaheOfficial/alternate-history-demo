@@ -588,7 +588,7 @@ export function GameSession({
     research: <ResearchScreen world={world} />,
     production: <ProductionScreen world={world} />,
     war: <WarScreen world={world} onWorldUpdate={setWorld} />,
-    crises: <CrisesScreen world={world} />,
+    crises: <CrisesScreen world={world} onWorldUpdate={setWorld} />,
     intelligence: <IntelligenceScreen world={world} />,
     saves: <SavesPanel world={world} onLoaded={setWorld} />,
     history: <HistoryPanel world={world} />,

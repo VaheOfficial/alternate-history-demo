@@ -6,10 +6,12 @@ use uuid::Uuid;
 
 use crate::engine::{
     accept_peace_proposal, advance_clock, apply_actions, apply_production, check_victory,
-    compute_progress, mark_concluded, reject_peace_proposal, resolve_movement,
-    run_economy_tick, run_npc_turn, tick_pending, tick_wars, ApplyOutcome, MovementOutcome,
-    NpcTurnResult, ProductionOutcome, ProductionRequest, VictoryProgress,
+    compute_progress, mark_concluded, reject_peace_proposal, resolve_crisis,
+    resolve_movement, run_economy_tick, run_npc_turn, tick_crises, tick_pending, tick_wars,
+    ApplyOutcome, MovementOutcome, NpcTurnResult, ProductionOutcome, ProductionRequest,
+    VictoryProgress,
 };
+use crate::world::ids::CrisisId;
 use crate::world::battle_plan::{BattlePlan, BattlePlanStatus};
 use crate::world::diplomacy::{ChannelStatus, DiplomaticChannel, DiplomaticMessage};
 use crate::world::ids::{NationId, ProvinceId, UnitId};
@@ -33,9 +35,23 @@ pub async fn end_turn_cmd(world: World, days: i64) -> Result<World> {
     run_economy_tick(&mut advanced, days.max(1));
     tick_pending(&mut advanced);
     tick_wars(&mut advanced);
+    tick_crises(&mut advanced);
     check_victory(&mut advanced);
     save_snapshot(advanced.clone()).await?;
     Ok(advanced)
+}
+
+#[tauri::command]
+pub async fn resolve_crisis_cmd(
+    world: World,
+    crisis_id: CrisisId,
+    option_idx: usize,
+) -> Result<World> {
+    let mut mutable = world;
+    resolve_crisis(&mut mutable, crisis_id, option_idx)
+        .map_err(|e| AppError::InvalidArgument(e))?;
+    let _ = save_snapshot(mutable.clone()).await;
+    Ok(mutable)
 }
 
 /// Player accepts a peace proposal attached to an active war.
