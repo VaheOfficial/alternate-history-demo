@@ -631,7 +631,6 @@ export function GameSession({
           collapsed={dockCollapsed}
           onCollapsedChange={setDockCollapsed}
           panels={dockPanels}
-          rightInset={selectedNation ? 380 : 0}
         />
         {selectedNation && (
           <CountryDrawer
