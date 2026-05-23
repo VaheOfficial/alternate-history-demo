@@ -26,6 +26,13 @@ import { SavesPanel } from "./SavesPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { TurnSummaryModal, type EconomyDelta } from "./TurnSummaryModal";
 import { CommandDock, type DockTab } from "./CommandDock";
+import { PoliticsScreen } from "./screens/PoliticsScreen";
+import { ResearchScreen } from "./screens/ResearchScreen";
+import { ProductionScreen } from "./screens/ProductionScreen";
+import { WarScreen } from "./screens/WarScreen";
+import { CrisesScreen } from "./screens/CrisesScreen";
+import { IntelligenceScreen } from "./screens/IntelligenceScreen";
+import { computeBadges } from "../../lib/game/badges";
 import { HudTopBar } from "./HudTopBar";
 import { colorForMapcolor } from "../../lib/map/renderer";
 
@@ -544,9 +551,17 @@ export function GameSession({
         }}
       />
     ),
+    politics: <PoliticsScreen world={world} />,
+    research: <ResearchScreen world={world} />,
+    production: <ProductionScreen world={world} />,
+    war: <WarScreen world={world} />,
+    crises: <CrisesScreen world={world} />,
+    intelligence: <IntelligenceScreen world={world} />,
     saves: <SavesPanel world={world} onLoaded={setWorld} />,
     history: <HistoryPanel world={world} />,
   } satisfies Record<DockTab, React.ReactNode>;
+
+  const dockBadges = useMemo(() => computeBadges(world), [world]);
 
   return (
     <div style={containerStyle}>
@@ -631,6 +646,7 @@ export function GameSession({
           collapsed={dockCollapsed}
           onCollapsedChange={setDockCollapsed}
           panels={dockPanels}
+          badges={dockBadges}
         />
         {selectedNation && (
           <CountryDrawer

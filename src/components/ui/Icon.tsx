@@ -139,3 +139,42 @@ export function CloseIcon({ size, ...rest }: IconProps) {
     </svg>
   );
 }
+
+// ── Plan 12 additions ─────────────────────────────────────────────────────
+
+export function BeakerIcon({ size, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M9 3h6" />
+      <path d="M10 3v6L4 19a2 2 0 0 0 1.7 3h12.6A2 2 0 0 0 20 19l-6-10V3" />
+      <path d="M6.5 14h11" />
+    </svg>
+  );
+}
+
+export function BellIcon({ size, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+    </svg>
+  );
+}
+
+export function EyeIcon({ size, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+export function CrownIcon({ size, ...rest }: IconProps) {
+  return (
+    <svg {...base(size)} {...rest}>
+      <path d="M2 18h20" />
+      <path d="M3 7l4 6 5-8 5 8 4-6-2 11H5L3 7z" />
+    </svg>
+  );
+}

@@ -7,15 +7,36 @@ import {
   HammerIcon,
   SendIcon,
   CloseIcon,
+  CrownIcon,
+  BeakerIcon,
+  FactoryIcon,
+  FistIcon,
+  BellIcon,
+  EyeIcon,
 } from "../ui/Icon";
+import {
+  NotificationBadge,
+  type BadgeLevel,
+} from "../ui/NotificationBadge";
 
 export type DockTab =
   | "orders"
   | "advisor"
   | "diplomacy"
   | "plans"
+  | "politics"
+  | "research"
+  | "production"
+  | "war"
+  | "crises"
+  | "intelligence"
   | "saves"
   | "history";
+
+export interface DockBadgeSpec {
+  level: BadgeLevel;
+  count?: number;
+}
 
 const WIDTH_STORAGE_KEY = "ahd:command-dock-width";
 const MIN_PANEL_WIDTH = 320;
@@ -37,18 +58,30 @@ export function CommandDock({
   collapsed,
   onCollapsedChange,
   panels,
+  badges,
 }: {
   active: DockTab;
   onActiveChange: (tab: DockTab) => void;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   panels: Record<DockTab, ReactNode>;
+  /**
+   * Per-tab notification badge state. Computed upstream from the world
+   * (see `lib/game/badges.ts`). Tabs without an entry render no badge.
+   */
+  badges?: Partial<Record<DockTab, DockBadgeSpec>>;
 }) {
   const tabs: Array<{ key: DockTab; label: string; icon: ReactNode }> = [
     { key: "orders", label: "Orders", icon: <ScrollIcon /> },
     { key: "advisor", label: "Advisor", icon: <GearIcon /> },
     { key: "diplomacy", label: "Diplomacy", icon: <SendIcon /> },
     { key: "plans", label: "Plans", icon: <HammerIcon /> },
+    { key: "politics", label: "Politics", icon: <CrownIcon /> },
+    { key: "research", label: "Research", icon: <BeakerIcon /> },
+    { key: "production", label: "Build", icon: <FactoryIcon /> },
+    { key: "war", label: "War", icon: <FistIcon /> },
+    { key: "crises", label: "Crises", icon: <BellIcon /> },
+    { key: "intelligence", label: "Intel", icon: <EyeIcon /> },
     { key: "saves", label: "Saves", icon: <DiskIcon /> },
     { key: "history", label: "History", icon: <BookIcon /> },
   ];
@@ -128,10 +161,13 @@ export function CommandDock({
 
   return (
     <div style={outerStyle} className="ahd-motion-slide-right">
-      {/* Icon strip — always visible. */}
+      {/* Icon strip — always visible. Vertically scrollable once the
+          tab list outgrows the viewport height (it does with all 12
+          tabs in Plan 12 Phase 0). */}
       <div style={stripStyle}>
         {tabs.map((t) => {
           const isActive = active === t.key && !collapsed;
+          const badge = badges?.[t.key];
           return (
             <button
               key={t.key}
@@ -139,6 +175,7 @@ export function CommandDock({
               style={{
                 ...iconButtonStyle,
                 ...(isActive ? iconButtonActiveStyle : null),
+                position: "relative",
               }}
               className="ahd-press"
               title={t.label}
@@ -153,6 +190,13 @@ export function CommandDock({
             >
               <span style={iconWrapStyle}>{t.icon}</span>
               <span style={iconLabelStyle}>{t.label}</span>
+              {badge && (
+                <NotificationBadge
+                  count={badge.count}
+                  level={badge.level}
+                  style={badgeOverlayStyle}
+                />
+              )}
             </button>
           );
         })}
@@ -242,9 +286,16 @@ const stripStyle: React.CSSProperties = {
   flexDirection: "column",
   gap: 4,
   padding: "10px 6px",
+  overflowY: "auto",
   backdropFilter: "blur(10px)",
   WebkitBackdropFilter: "blur(10px)",
   pointerEvents: "auto",
+};
+
+const badgeOverlayStyle: React.CSSProperties = {
+  position: "absolute",
+  top: 4,
+  right: 4,
 };
 
 const iconButtonStyle: React.CSSProperties = {
