@@ -148,7 +148,9 @@ pub async fn start_spy_mission_cmd(
 #[tauri::command]
 pub async fn dismiss_spy_mission_cmd(world: World, mission_id: String) -> Result<World> {
     let mut mutable = world;
-    mutable.spy_missions.retain(|m| m.id != mission_id || !m.resolved);
+    // Archive (drop) only the mission with this id IF it's already
+    // resolved. Active missions can't be archived from the UI.
+    mutable.spy_missions.retain(|m| !(m.id == mission_id && m.resolved));
     let _ = save_snapshot(mutable.clone()).await;
     Ok(mutable)
 }
@@ -1110,14 +1112,27 @@ fn build_system_prompt(world: &World) -> String {
     // IMMEDIATE typed actions (apply this turn). Use these for things that
     // realistically take effect within a few days — diplomatic shifts,
     // signing a treaty, sending a unit somewhere, changing a stat.
+    //
+    // ⚠️ FIELD-VALUE RULES (engine will SKIP any action that violates these):
+    //   • Wherever a field's type below says "<NationId>" / "<ProvinceId>"
+    //     / "<NpcId>", you MUST substitute the FULL UUID string copied
+    //     verbatim from the directory in the WORLD SUMMARY below. Do not
+    //     write the literal placeholder "<NationId>" — that's a TYPE name
+    //     to be replaced.
+    //   • Every action below has REQUIRED FIELDS. modify_resource and
+    //     modify_stability REQUIRE the "nation" field (not "from", not
+    //     "to") — the field name is literally "nation".
+    //   • Use only the action shapes listed here. Unknown shapes are dropped.
+    //
     // Each MUST be one of:
-    {"action": "declare_war", "aggressor": "<NationId>", "target": "<NationId>", "justification": "..."},
+    {"action": "declare_war", "aggressor": "<NationId>", "target": "<NationId>", "justification": "...", "casus_belli": "annex_provinces|install_puppet|force_concession|demilitarize|humiliate_rival|free_nation"},
     {"action": "sign_treaty", "parties": ["<NationId>", "<NationId>"], "kind": "non_aggression|defensive_pact|alliance|trade_agreement|ceasefire|peace_treaty|vassalage", "terms": {"territory_transfers": [], "tribute_per_year": 0, "extra_clauses": []}},
     {"action": "transfer_territory", "from": "<NationId>", "to": "<NationId>", "provinces": ["<ProvinceId>"], "mechanism": "conquest|treaty|secession|decolonization|other"},
     {"action": "modify_relation", "from": "<NationId>", "to": "<NationId>", "delta": -100..100, "reason": "..."},
     {"action": "change_government", "nation": "<NationId>", "new_form": "democracy|monarchy|republic|communist|fascist|military_junta|theocracy|other", "mechanism": "election|coup|revolution|abdication|foreign_imposition"},
     {"action": "modify_stability", "nation": "<NationId>", "delta": -100..100},
     {"action": "modify_resource", "nation": "<NationId>", "resource": "steel|oil|rubber|tungsten", "delta": -10000..10000},
+    {"action": "modify_faction", "nation": "<NationId>", "archetype": "military|business|religious|populist|intellectual", "delta": -50..50},
     {"action": "assassinate_npc", "target": "<NpcId>"}
   ],
   "pending": [
@@ -1150,13 +1165,15 @@ fn build_system_prompt(world: &World) -> String {
             .to_string(),
     };
 
-    let example = r#"EXAMPLE INPUT: "Threaten Canada with invasion if they refuse annexation"
-EXAMPLE OUTPUT (use this EXACT structure — actions and pending entries are OBJECTS, not strings):
+    let example = r#"EXAMPLE OUTPUT shape (with UUID placeholders shown as PLACEHOLDER_…, you
+must substitute the REAL uuids from the directory):
 {
   "accepted": true,
   "narrative": "The White House issues a forceful ultimatum to Ottawa. Border garrisons go on high alert. Canadian markets crash overnight as the world watches.",
   "actions": [
-    {"action": "modify_relation", "from": "<USA_id>", "to": "<CAN_id>", "delta": -60, "reason": "Annexation ultimatum"}
+    {"action": "modify_relation", "from": "PLACEHOLDER_USA_UUID_FROM_DIRECTORY", "to": "PLACEHOLDER_CAN_UUID_FROM_DIRECTORY", "delta": -60, "reason": "Annexation ultimatum"},
+    {"action": "modify_stability", "nation": "PLACEHOLDER_USA_UUID_FROM_DIRECTORY", "delta": -2},
+    {"action": "modify_resource", "nation": "PLACEHOLDER_USA_UUID_FROM_DIRECTORY", "resource": "steel", "delta": -200}
   ],
   "pending": [
     {
@@ -1164,12 +1181,18 @@ EXAMPLE OUTPUT (use this EXACT structure — actions and pending entries are OBJ
       "narrative": "Five US divisions deploy to the Great Lakes and Pacific Northwest, ready to invade if Ottawa refuses.",
       "days_to_complete": 14,
       "on_complete": [
-        {"action": "declare_war", "aggressor": "<USA_id>", "target": "<CAN_id>", "justification": "Refused annexation"}
+        {"action": "declare_war", "aggressor": "PLACEHOLDER_USA_UUID_FROM_DIRECTORY", "target": "PLACEHOLDER_CAN_UUID_FROM_DIRECTORY", "justification": "Refused annexation", "casus_belli": "annex_provinces"}
       ]
     }
   ],
   "next_tick_days": 7
 }
+
+⚠️ The literal strings "PLACEHOLDER_…", "<NationId>", "<USA_id>", etc. above are
+not valid in your output. Replace each with the matching FULL UUID from the
+ALL NATIONS directory below (the part between "=" and "|", e.g.
+"a3f1b2c4-9876-5432-1234-abcdef012345"). If you cannot find the UUID, leave
+the action out of the list — the engine rejects placeholder strings.
 
 IMPORTANT — UNIT MOVEMENT IS NOT IN YOUR ACTION SET. Do NOT emit `move_unit`.
 You do not have access to specific unit IDs. If the player asks to move troops,

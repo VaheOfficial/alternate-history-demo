@@ -323,7 +323,11 @@ async fn run_nation_turn(
 
     let relations = build_relations_block(world, nation);
     let directory = build_nation_directory(world);
-    let recent_events = build_recent_events(world);
+    // Per-nation event filter (Plan 12 post-test bug bundle): each NPC
+    // sees only events whose typed_actions actually involve them, so
+    // unrelated nations stop narrating "USA has declared war on us"
+    // when the USA declared war on someone else entirely.
+    let recent_events = build_recent_events_for(world, nation.id);
 
     let goals = if nation.goals.is_empty() {
         "(no specific goals — preserve sovereignty and stability)".to_string()
@@ -484,6 +488,55 @@ fn build_recent_events(world: &World) -> String {
         .collect();
     if recent.is_empty() {
         "(no recent events)".to_string()
+    } else {
+        recent.join("\n")
+    }
+}
+
+/// Per-nation event filter: only include events whose typed_actions touch
+/// this nation (as aggressor, target, party, owner, from, to, etc.). This
+/// stops random NPCs from narrating "the USA declared war on us" when
+/// the USA declared war on someone else entirely.
+fn build_recent_events_for(world: &World, nation_id: crate::world::ids::NationId) -> String {
+    use crate::world::action::TypedAction;
+    let mentions = |a: &TypedAction| -> bool {
+        match a {
+            TypedAction::DeclareWar { aggressor, target, .. } => {
+                *aggressor == nation_id || *target == nation_id
+            }
+            TypedAction::SignTreaty { parties, .. } => parties.contains(&nation_id),
+            TypedAction::TransferTerritory { from, to, .. } => {
+                *from == nation_id || *to == nation_id
+            }
+            TypedAction::ModifyRelation { from, to, .. } => {
+                *from == nation_id || *to == nation_id
+            }
+            TypedAction::SpawnUnit { owner, .. } => *owner == nation_id,
+            TypedAction::MoveUnit { .. } => false,
+            TypedAction::ChangeGovernment { nation, .. } => *nation == nation_id,
+            TypedAction::AssassinateNpc { .. } => false,
+            TypedAction::ModifyResource { nation, .. } => *nation == nation_id,
+            TypedAction::ModifyStability { nation, .. } => *nation == nation_id,
+            TypedAction::ModifyFaction { nation, .. } => *nation == nation_id,
+        }
+    };
+    let recent: Vec<String> = world
+        .events
+        .iter()
+        .rev()
+        .filter(|e| e.typed_actions.iter().any(mentions))
+        .take(8)
+        .map(|e| {
+            format!(
+                "  [round {}] {} — {}",
+                e.round,
+                e.headline,
+                e.narrative.chars().take(140).collect::<String>(),
+            )
+        })
+        .collect();
+    if recent.is_empty() {
+        "(no recent events directly concern this nation)".to_string()
     } else {
         recent.join("\n")
     }

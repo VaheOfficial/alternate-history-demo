@@ -113,6 +113,29 @@ fn apply_one(
             n.stability = (n.stability + delta).clamp(-100, 100);
             Ok(())
         }
+        TypedAction::ModifyFaction {
+            nation,
+            archetype,
+            delta,
+        } => {
+            let n = world
+                .nations
+                .iter_mut()
+                .find(|n| n.id == *nation)
+                .ok_or_else(|| format!("nation {} not found", nation))?;
+            if let Some(f) = n.factions.iter_mut().find(|f| f.archetype == *archetype) {
+                let sat = (f.satisfaction as i32 + *delta).clamp(0, 100) as u8;
+                let pow = (f.power as i32 + delta / 2).clamp(0, 100) as u8;
+                f.satisfaction = sat;
+                f.power = pow;
+                Ok(())
+            } else {
+                Err(format!(
+                    "nation {} has no {:?} faction",
+                    nation, archetype
+                ))
+            }
+        }
         TypedAction::ModifyResource {
             nation,
             resource,
@@ -353,6 +376,7 @@ fn synthesize_headline(applied: &[TypedAction]) -> String {
             TypedAction::TransferTerritory { .. } => "territory transferred",
             TypedAction::ModifyRelation { .. } => "diplomatic shift",
             TypedAction::ModifyStability { .. } => "stability change",
+            TypedAction::ModifyFaction { .. } => "faction shift",
             TypedAction::ModifyResource { .. } => "resource change",
             TypedAction::ChangeGovernment { .. } => "government change",
             TypedAction::SpawnUnit { .. } => "unit raised",

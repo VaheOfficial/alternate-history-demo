@@ -331,12 +331,16 @@ fn cull_dead_units(world: &mut World) {
 /// Plan 12 Phase 1: when a conquest flips ownership, record the
 /// province on every active war between the aggressor and the
 /// defender so the peace-proposal generator can package it later.
+/// Also re-runs the war tick so the War screen's occupation%
+/// updates immediately on the same turn instead of waiting for
+/// end_turn.
 fn record_war_conquest(
     world: &mut World,
     aggressor: NationId,
     defender: NationId,
     province: ProvinceId,
 ) {
+    let mut touched = false;
     for war in world.wars.iter_mut() {
         if !matches!(war.status, crate::world::war::WarStatus::Active) {
             continue;
@@ -345,7 +349,11 @@ fn record_war_conquest(
             if !war.conquered_provinces.contains(&province) {
                 war.conquered_provinces.push(province);
             }
+            touched = true;
         }
+    }
+    if touched {
+        crate::engine::war::tick_wars(world);
     }
 }
 

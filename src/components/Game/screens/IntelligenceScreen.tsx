@@ -209,12 +209,20 @@ export function IntelligenceScreen({
         <div style={listStyle}>
           {active.map((m) => {
             const target = nationsById.get(m.target);
+            const daysLeft = computeDaysBetween(
+              world.clock.current_date,
+              m.resolves_on,
+            );
             return (
               <div key={m.id} style={cardStyle}>
                 <div style={cardHeaderStyle}>
                   <strong>{labelForKind(m.kind)}</strong>
                   <span style={metaStyle}>
-                    → {target?.name ?? "(unknown)"} · resolves {m.resolves_on}
+                    → {target?.name ?? "(unknown)"} · resolves in{" "}
+                    {daysLeft <= 0
+                      ? "next turn"
+                      : `${daysLeft} day${daysLeft === 1 ? "" : "s"}`}{" "}
+                    ({m.resolves_on})
                   </span>
                 </div>
                 <div style={metaStyle}>
@@ -293,6 +301,12 @@ function labelForKind(k: SpyMissionKind): string {
 }
 function labelForTech(t: TechId): string {
   return TECH_OPTIONS.find((x) => x.id === t)?.label ?? t;
+}
+function computeDaysBetween(today: string, future: string): number {
+  const a = new Date(today + "T00:00:00Z").getTime();
+  const b = new Date(future + "T00:00:00Z").getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  return Math.max(0, Math.round((b - a) / (24 * 3600 * 1000)));
 }
 
 const containerStyle: React.CSSProperties = {

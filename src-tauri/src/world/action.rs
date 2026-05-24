@@ -81,6 +81,17 @@ pub enum TypedAction {
         nation: NationId,
         delta: i32,
     },
+    /// Plan 12 post-test: direct faction shift the validator can emit
+    /// when the player explicitly empowers/suppresses a faction
+    /// (e.g. "empower the military", "crack down on the populists").
+    ModifyFaction {
+        nation: NationId,
+        archetype: crate::world::faction::FactionArchetype,
+        /// Range -50..=50. Applied to BOTH satisfaction and power
+        /// (smaller magnitude on power) — empowering means more
+        /// power AND more satisfaction.
+        delta: i32,
+    },
 }
 
 #[cfg(test)]

@@ -65,6 +65,17 @@ export function TurnSummaryModal({
         </div>
 
         <div style={bodyStyle}>
+          <Section title="World Briefing">
+            <NewsArticle
+              playerNation={playerNation}
+              nationTurns={nationTurns}
+              picks={picks}
+              newDate={newDate}
+              daysElapsed={daysElapsed}
+              worldByIso={worldByIso}
+            />
+          </Section>
+
           {playerNation && economyDelta && (
             <Section title="Your nation">
               <PlayerCard nation={playerNation} delta={economyDelta} />
@@ -140,6 +151,156 @@ export function TurnSummaryModal({
     </div>
   );
 }
+
+/**
+ * News-article-style turn summary (Plan 12 post-test). Stitches a single
+ * "global briefing" paragraph from each NPC's per-turn narrative so the
+ * player gets a journalist's headline view BEFORE the per-country
+ * detail cards. Deterministic — no extra LLM call.
+ */
+function NewsArticle({
+  playerNation,
+  nationTurns,
+  picks,
+  newDate,
+  daysElapsed,
+  worldByIso,
+}: {
+  playerNation: Nation | null;
+  nationTurns: NationTurn[];
+  picks: OrchestratorPick[];
+  newDate: string;
+  daysElapsed: number;
+  worldByIso: Map<string, Nation>;
+}) {
+  // Lead paragraph: who acted, how many turned out quiet.
+  const acted = new Set(nationTurns.map((t) => t.iso));
+  const quiet = picks.filter((p) => !acted.has(p.iso));
+  const dateline = formatDate(newDate).toUpperCase();
+  const playerLine = playerNation
+    ? `${playerNation.name} ended the ${daysElapsed}-day period at stability ${playerNation.stability} and war support ${playerNation.war_support}.`
+    : `${daysElapsed} days passed since the last bulletin.`;
+
+  // Pull the single most useful sentence (first sentence-ish) from each
+  // NPC's narrative so the article reads like a wire summary.
+  const lines = nationTurns.map((t) => {
+    const nation = worldByIso.get(t.iso);
+    const first = firstSentence(t.narrative);
+    return {
+      name: nation?.name ?? t.iso,
+      iso: t.iso,
+      text: first,
+      action_count: t.applied.length,
+    };
+  });
+
+  return (
+    <article style={articleStyle}>
+      <div style={datelineStyle}>{dateline} · GLOBAL BRIEFING</div>
+      <p style={leadStyle}>{playerLine}</p>
+      {lines.length === 0 ? (
+        <p style={bodyStyleP}>
+          No nation took a notable action this period — markets quiet, capitals
+          quiet, the wire ran light.
+        </p>
+      ) : (
+        <ul style={ulStyle}>
+          {lines.map((l) => (
+            <li key={l.iso} style={liStyle}>
+              <strong>{l.name}:</strong> {l.text}
+              {l.action_count > 0 && (
+                <span style={actionTagStyle}>
+                  {l.action_count} action{l.action_count === 1 ? "" : "s"}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {quiet.length > 0 && (
+        <p style={quietParaStyle}>
+          {quiet.length} other power{quiet.length === 1 ? "" : "s"} were
+          considered but stayed quiet: {quiet.map((q) => q.iso).join(", ")}.
+        </p>
+      )}
+    </article>
+  );
+}
+
+function firstSentence(s: string): string {
+  if (!s) return "(no commentary)";
+  const trimmed = s.trim();
+  // Stop at the first sentence terminator, capped at ~280 chars.
+  const m = trimmed.match(/^(.{20,280}?[.!?])(\s|$)/);
+  if (m) return m[1];
+  return trimmed.slice(0, 280) + (trimmed.length > 280 ? "…" : "");
+}
+
+const articleStyle: React.CSSProperties = {
+  background: "var(--surface-1)",
+  border: "1px solid var(--border)",
+  borderLeft: "3px solid var(--accent)",
+  borderRadius: "var(--radius-md)",
+  padding: "14px 16px",
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  fontFamily: "var(--font-serif, Georgia, serif)",
+};
+
+const datelineStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: "0.12em",
+  color: "var(--accent)",
+  fontFamily: "var(--font-sans)",
+};
+
+const leadStyle: React.CSSProperties = {
+  margin: 0,
+  fontSize: "var(--fs-md)",
+  fontWeight: 600,
+  lineHeight: 1.4,
+};
+
+const bodyStyleP: React.CSSProperties = {
+  margin: 0,
+  color: "var(--fg-muted)",
+  fontSize: "var(--fs-sm)",
+  lineHeight: 1.55,
+};
+
+const ulStyle: React.CSSProperties = {
+  margin: 0,
+  paddingLeft: 18,
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+};
+
+const liStyle: React.CSSProperties = {
+  color: "var(--fg-muted)",
+  fontSize: "var(--fs-sm)",
+  lineHeight: 1.55,
+};
+
+const actionTagStyle: React.CSSProperties = {
+  marginLeft: 8,
+  padding: "1px 8px",
+  borderRadius: 999,
+  background: "var(--surface-3)",
+  color: "var(--fg-dim)",
+  fontSize: 10,
+  fontWeight: 700,
+  fontFamily: "var(--font-sans)",
+};
+
+const quietParaStyle: React.CSSProperties = {
+  margin: 0,
+  color: "var(--fg-dim)",
+  fontSize: "var(--fs-xs)",
+  fontStyle: "italic",
+};
 
 function Section({
   title,

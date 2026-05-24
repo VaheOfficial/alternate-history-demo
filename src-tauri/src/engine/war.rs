@@ -92,6 +92,46 @@ pub fn tick_wars(world: &mut World) {
             war.peace_proposals.push(p);
         }
     }
+
+    // Plan 12 post-test: war support consequences. For every ACTIVE war,
+    // war_support trends DOWN slightly each tick (war weariness) for
+    // the aggressor unless the war is going well (occupation% > 40)
+    // — in which case it ticks UP because the public is enjoying the
+    // victories. The defender's war_support trends DOWN faster the
+    // more they're losing.
+    let aggressor_updates: Vec<(NationId, i32)> = world
+        .wars
+        .iter()
+        .filter(|w| matches!(w.status, WarStatus::Active))
+        .map(|w| {
+            let delta = if w.occupation_pct >= 40 {
+                2
+            } else {
+                -1
+            };
+            (w.aggressor, delta)
+        })
+        .collect();
+    let defender_updates: Vec<(NationId, i32)> = world
+        .wars
+        .iter()
+        .filter(|w| matches!(w.status, WarStatus::Active))
+        .flat_map(|w| {
+            let delta = if w.occupation_pct >= 60 {
+                -4
+            } else if w.occupation_pct >= 30 {
+                -2
+            } else {
+                -1
+            };
+            w.defenders.iter().map(move |d| (*d, delta))
+        })
+        .collect();
+    for (nid, delta) in aggressor_updates.iter().chain(defender_updates.iter()) {
+        if let Some(n) = world.nations.iter_mut().find(|n| n.id == *nid) {
+            n.war_support = (n.war_support + delta).clamp(-100, 100);
+        }
+    }
 }
 
 fn build_peace_proposal(

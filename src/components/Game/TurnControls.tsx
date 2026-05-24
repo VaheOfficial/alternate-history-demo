@@ -28,7 +28,10 @@ export function TurnControls({
   pacingHint: number | null;
   onEndTurn: (days: number) => void;
 }) {
-  const [inc, setInc] = useState<TimeIncrement>("1w");
+  // Default to AI-paced advance: the LLM's last `next_tick_days`
+  // suggestion drives how far the clock moves. Players can still pick
+  // a fixed length via the chip strip.
+  const [inc, setInc] = useState<TimeIncrement>("ai");
 
   const handle = () => {
     const aiFallback = pacingHint ?? 7;

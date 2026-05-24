@@ -106,12 +106,69 @@ fn apply_success(world: &mut World, mission: &SpyMission) -> SpyOutcome {
                 ),
             }
         }
-        SpyMissionKind::GatherIntel => SpyOutcome::Success {
-            narrative: format!(
-                "Comprehensive intelligence report on {} delivered. Force composition, doctrine, and political tensions all detailed.",
-                target_name,
-            ),
-        },
+        SpyMissionKind::GatherIntel => {
+            // Real intel rather than a vague boilerplate string —
+            // pull live numbers from the target so the player has
+            // something to act on.
+            let target_units = world
+                .units
+                .iter()
+                .filter(|u| u.owner == mission.target)
+                .count();
+            let target_provinces = world
+                .provinces
+                .iter()
+                .filter(|p| p.owner == mission.target)
+                .count();
+            let target = world.nations.iter().find(|n| n.id == mission.target);
+            let (gov, doctrine, stability, war_support, ic, treasury) = target
+                .map(|n| {
+                    (
+                        format!("{:?}", n.government),
+                        format!("{:?}", n.doctrine),
+                        n.stability,
+                        n.war_support,
+                        n.industry_capacity,
+                        n.treasury,
+                    )
+                })
+                .unwrap_or_else(|| ("?".into(), "?".into(), 0, 0, 0, 0));
+            let goals = target
+                .map(|n| {
+                    if n.goals.is_empty() {
+                        "no public goals on file".to_string()
+                    } else {
+                        n.goals
+                            .iter()
+                            .take(3)
+                            .enumerate()
+                            .map(|(i, g)| format!("{}. {}", i + 1, g))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    }
+                })
+                .unwrap_or_default();
+            SpyOutcome::Success {
+                narrative: format!(
+                    "Intelligence on {}:\n\
+                     • Government: {} · Doctrine: {}\n\
+                     • Stability: {} · War support: {}\n\
+                     • Industry: {} · Treasury: ${}M\n\
+                     • Forces: {} divisions across {} provinces\n\
+                     • Stated goals: {}",
+                    target_name,
+                    gov,
+                    doctrine,
+                    stability,
+                    war_support,
+                    ic,
+                    treasury / 1_000_000,
+                    target_units,
+                    target_provinces,
+                    goals,
+                ),
+            }
+        }
     }
 }
 

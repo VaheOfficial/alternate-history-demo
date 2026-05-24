@@ -78,12 +78,21 @@ fn spawn_from_recent_events(world: &mut World) {
     let Some(player) = world.player_nation else {
         return;
     };
-    // Walk the most-recent 5 events for hostile actions targeting the
-    // player. Skip events we've already spawned a crisis for (dedupe
-    // by checking if the crisis with same parties + headline exists).
-    let recent: Vec<Event> = world.events.iter().rev().take(5).cloned().collect();
     let today = world.clock.current_date;
     let current_round = world.clock.round;
+    // Only events from THIS round count toward crisis triggers. Without
+    // this filter, a single DeclareWar would re-spawn a crisis every
+    // turn for as long as the event stayed in the top-5 list (i.e. the
+    // first 5 turns after declaration), even after the player resolved
+    // the first instance.
+    let recent: Vec<Event> = world
+        .events
+        .iter()
+        .rev()
+        .take(20)
+        .filter(|e| e.round == current_round || e.round + 1 >= current_round)
+        .cloned()
+        .collect();
 
     for evt in recent {
         for action in &evt.typed_actions {
@@ -260,12 +269,14 @@ fn spawn_diplomatic_incident_crisis(
 
 fn spawn_random_events(world: &mut World) {
     // Deterministic-ish: hash the date + round to pick whether to fire
-    // an event this turn. Probability ≈ 1/4 per turn.
+    // an event this turn. Probability ≈ 1/14 per turn (much rarer than
+    // the original 1/4 — testers were getting multiple natural disasters
+    // within a fortnight of game time).
     let seed = (world.clock.current_date.num_days_from_ce() as u64)
         .wrapping_mul(31)
         .wrapping_add(world.clock.round as u64);
     let r = (seed.wrapping_mul(2654435761) >> 56) & 0xFF; // 0..255
-    if r >= 64 {
+    if r >= 18 {
         return;
     }
     // We avoid global events when there's no player nation set.
